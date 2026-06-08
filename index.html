@@ -39,7 +39,7 @@
           display:flex; align-items:baseline; gap:10px}
   .step-h .n{font-size:13px; color:var(--accent); font-family:"IBM Plex Mono",monospace}
 
-  .drop{border:1.5px dashed var(--rule); border-radius:8px; background:var(--paper-2);
+  .drop{display:block; border:1.5px dashed var(--rule); border-radius:8px; background:var(--paper-2);
         padding:26px; text-align:center; cursor:pointer; transition:.15s}
   .drop:hover{border-color:var(--accent); background:var(--accent-soft)}
   .drop.armed{border-color:var(--accent); background:var(--accent-soft)}
@@ -385,6 +385,28 @@ function renderAPA(R, respName, grpName, lvls, info){
       95% CI [${nz(R.gl)}, ${nz(R.gu)}].</p>`;
   document.getElementById('apa').innerHTML = html;
 
+  // Word-friendly HTML: borders written inline onto cells (CSS classes get dropped on paste).
+  const TLINE='border-top:1.5px solid #000;', BHEAD='border-bottom:1px solid #000;', BBOT='border-bottom:1.5px solid #000;';
+  const C='padding:3px 10px;font-family:\'Times New Roman\',serif;font-size:11pt;';
+  const copyHtml =
+`<p style="font-style:italic;font-family:'Times New Roman',serif;font-size:11pt;margin:0;">Table 1</p>
+<p style="font-style:italic;font-family:'Times New Roman',serif;font-size:11pt;margin:0 0 6pt;">Descriptive Statistics and Welch's t Test for ${respName} by ${grpName}</p>
+<table style="border-collapse:collapse;">
+<tr>
+<td style="${C}${TLINE}${BHEAD}text-align:left;">${grpName}</td>
+<td style="${C}${TLINE}${BHEAD}text-align:right;font-style:italic;">n</td>
+<td style="${C}${TLINE}${BHEAD}text-align:right;font-style:italic;">M</td>
+<td style="${C}${TLINE}${BHEAD}text-align:right;font-style:italic;">SD</td>
+</tr>
+<tr>
+<td style="${C}text-align:left;">${l1}</td><td style="${C}text-align:right;">${R.n1}</td><td style="${C}text-align:right;">${f2(R.m1)}</td><td style="${C}text-align:right;">${f2(R.s1)}</td>
+</tr>
+<tr>
+<td style="${C}${BBOT}text-align:left;">${l2}</td><td style="${C}${BBOT}text-align:right;">${R.n2}</td><td style="${C}${BBOT}text-align:right;">${f2(R.m2)}</td><td style="${C}${BBOT}text-align:right;">${f2(R.s2)}</td>
+</tr>
+</table>
+<p style="font-family:'Times New Roman',serif;font-size:11pt;margin:6pt 0 0;"><i>Note.</i> Welch's <i>t</i>(${f2(R.df)}) = ${f2(R.t)}, <i>p</i> ${pFmt(R.p)}, two-sided. Mean difference (${l1} &minus; ${l2}) = ${f2(R.md)}, 95% CI [${f2(R.cil)}, ${f2(R.ciu)}]. Hedges' <i>g*</i><sub>s</sub> = ${nz(R.g)}, 95% CI [${nz(R.gl)}, ${nz(R.gu)}].</p>`;
+
   lastResult = {
     plain:
 `Table 1
@@ -395,7 +417,7 @@ ${l1}\t${R.n1}\t${f2(R.m1)}\t${f2(R.s1)}
 ${l2}\t${R.n2}\t${f2(R.m2)}\t${f2(R.s2)}
 
 Note. Welch's t(${f2(R.df)}) = ${f2(R.t)}, p ${pFmt(R.p)}, two-sided. Mean difference (${l1} - ${l2}) = ${f2(R.md)}, 95% CI [${f2(R.cil)}, ${f2(R.ciu)}]. Hedges' g*s = ${nz(R.g)}, 95% CI [${nz(R.gl)}, ${nz(R.gu)}].`,
-    htmlTable: document.getElementById('apa').innerHTML
+    htmlTable: copyHtml
   };
 }
 
