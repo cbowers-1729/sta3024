@@ -71,6 +71,9 @@
   table.apa-tbl tbody tr:last-child td{border-bottom:1.5px solid var(--ink)}
   table.apa-tbl td.num,table.apa-tbl th.num{font-family:"IBM Plex Mono",monospace; font-variant-numeric:tabular-nums}
   .apa .note{font-size:12.5px; color:var(--ink-soft); margin:11px 0 0; line-height:1.5}
+  .methodnote{margin-top:16px; font-size:12.5px; color:var(--ink-soft); line-height:1.55;
+    border-left:3px solid var(--accent); background:var(--accent-soft); padding:10px 14px; border-radius:0 6px 6px 0}
+  .methodnote b{color:var(--ink)}
   .copy{font:inherit; font-size:12px; color:var(--accent); background:none; border:1px solid var(--accent);
         border-radius:5px; padding:3px 10px; cursor:pointer}
   .copy:hover{background:var(--accent-soft)}
@@ -123,6 +126,7 @@
         <div class="apa" id="apa"></div>
       </div>
     </div>
+    <div class="methodnote hidden" id="methodNote"></div>
     <div class="hint">The two panels show the same analysis: R's native console output on the left, a clean APA table on the right (to read and paste). You write the interpretation.</div>
   </div>
 
@@ -204,6 +208,7 @@ const TESTS = {
   ind_means: {
     label: "Independent means — Welch's t test + Hedges' g*s",
     dropHint: "Long/tidy data: a numeric outcome column and a 2-level grouping column.",
+    methodNote: "<b>Why these methods.</b> Welch's <i>t</i> is the default because the equal-variance assumption rarely holds and pretesting it does not help (Delacre, Lakens &amp; Leys, 2017). Hedges' <i>g*</i><sub>s</sub> pairs with it \u2014 the non-pooled SD with a small-sample correction \u2014 and is preferred over Cohen's <i>d</i> under unequal variances (Delacre et al., 2021).",
     roles: [
       { key:'resp', kind:'numeric', label:'Response — numeric outcome' },
       { key:'grp',  kind:'group2',  label:'Group — must have exactly 2 levels' }
@@ -257,6 +262,7 @@ c(t=unname(tt$statistic), df=unname(tt$parameter), p=tt$p.value,
   paired: {
     label: "Paired / repeated measures — paired t test + Hedges' g_z",
     dropHint: "Two numeric columns, one per condition (e.g. pre and post); each row is one subject or matched pair.",
+    methodNote: "<b>Why this effect size.</b> Hedges' <i>g</i><sub>z</sub> standardizes the mean difference by the SD of the differences (the within-subject standardizer) and applies a small-sample correction, so it is less biased than the uncorrected Cohen's <i>d</i><sub>z</sub>, especially at small <i>n</i> (Lakens, 2013).",
     roles: [
       { key:'pre',  kind:'numeric', label:'First condition (e.g. pre) — numeric' },
       { key:'post', kind:'numeric', label:'Second condition (e.g. post) — numeric' }
@@ -437,6 +443,8 @@ runBtn.addEventListener('click', async ()=>{
     document.getElementById('apa').innerHTML = out.screenHtml;
     lastResult = { plain: out.plain, htmlTable: out.copyHtml };
     document.getElementById('outStep').classList.remove('hidden');
+    const mn=document.getElementById('methodNote');
+    if(t.methodNote){ mn.innerHTML=t.methodNote; mn.classList.remove('hidden'); } else { mn.classList.add('hidden'); }
     setStatus(`Done. ${used} rows analysed${dropped?`, ${dropped} dropped for missing values`:''}.`);
   }catch(e){ setStatus('R error: '+e.message,{err:true}); }
   finally{ await shelter.purge(); runBtn.disabled=false; }
