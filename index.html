@@ -418,7 +418,6 @@ c(t=t.obs, df=df, p=tt$p.value, md=md, cil=tt$conf.int[1], ciu=tt$conf.int[2],
   brunner: {
     label: "Independent groups, rank-based — Brunner-Munzel test",
     dropHint: "Long/tidy data: a numeric outcome column and a 2-level grouping column.",
-    packages: ['brunnermunzel'],
     methodNote: "<b>Why this test.</b> Brunner-Munzel is preferred over the Wilcoxon-Mann-Whitney test: MW's equal-distribution assumption fails under unequal spread or shape, where Brunner-Munzel keeps Type I error controlled with comparable power (Karch, 2021). It tests stochastic dominance \u2014 whether scores in one group tend to exceed the other \u2014 not a difference in medians (Divine et al., 2018).",
     roles: [
       { key:'resp', kind:'numeric', label:'Response — numeric outcome' },
@@ -427,16 +426,28 @@ c(t=t.obs, df=df, p=tt$p.value, md=md, cil=tt$conf.int[1], ciu=tt$conf.int[2],
     defaults: { resp:'bwt', grp:'smoke' },
     resultKeys: ['stat','df','p','phat','cil','ciu','n1','md1','n2','md2'],
     rProgram: `
-library(brunnermunzel)
 d <- data.frame(resp = as.numeric(resp), grp = factor(grp))
 lv <- levels(d$grp)
-bm <- brunnermunzel.test(resp ~ grp, data = d)
-g1 <- d$resp[d$grp == lv[1]]; g2 <- d$resp[d$grp == lv[2]]
-print(bm)
+x <- d$resp[d$grp == lv[1]]; y <- d$resp[d$grp == lv[2]]
+nx <- length(x); ny <- length(y); N <- nx + ny
+rx <- rank(x); ry <- rank(y); r <- rank(c(x, y))
+mx <- mean(r[1:nx]); my <- mean(r[(nx+1):N])
+pst <- (my - (ny+1)/2)/nx
+vx <- sum((r[1:nx] - rx - mx + (nx+1)/2)^2)/(nx-1)
+vy <- sum((r[(nx+1):N] - ry - my + (ny+1)/2)^2)/(ny-1)
+se <- sqrt(vx/(nx*ny^2) + vy/(ny*nx^2))
+stat <- (pst - 0.5)/se
+df <- ((nx*vx + ny*vy)^2)/(((nx*vx)^2)/(nx-1) + ((ny*vy)^2)/(ny-1))
+p <- 2*pt(abs(stat), df, lower.tail = FALSE)
+ci <- pst + c(-1,1)*qt(0.975, df)*se
+cat("\\n\\tBrunner-Munzel Test\\n\\n")
+cat("data:  resp by grp\\n")
+cat(sprintf("Brunner-Munzel statistic = %.4f, df = %.3f, p-value = %.5g\\n", stat, df, p))
+cat(sprintf("95 percent confidence interval: %.4f %.4f\\n", ci[1], ci[2]))
+cat(sprintf("sample estimate, P(X<Y)+.5*P(X=Y) = %.4f\\n", pst))
 cat(sprintf("\\nGroups: %s vs %s\\n", lv[1], lv[2]))
-c(stat=unname(bm$statistic), df=unname(bm$parameter), p=bm$p.value,
-  phat=unname(bm$estimate), cil=bm$conf.int[1], ciu=bm$conf.int[2],
-  n1=length(g1), md1=median(g1), n2=length(g2), md2=median(g2))`,
+c(stat=stat, df=df, p=p, phat=pst, cil=ci[1], ciu=ci[2],
+  n1=nx, md1=median(x), n2=ny, md2=median(y))`,
     render(R, ctx){
       const [l1,l2]=ctx.levels.grp, grp=ctx.cols.grp, resp=ctx.cols.resp;
       return buildAPA({
