@@ -295,6 +295,8 @@ async function drawEDA(env, cols, active){
   } finally { await shelter.purge(); }
 }
 
+function rlistToObj(j){ const o={}; (j.names||[]).forEach((nm,i)=>{ o[nm]=j.values[i].values; }); return o; }
+
 const TESTS = {
 
   eda: {
@@ -508,6 +510,67 @@ c(t=t.obs, df=df, p=tt$p.value, m=m, s=s, n=n, mu0=mu0,
         }
       });
     }
+  },
+
+  chisq: {
+    label: "Chi-square test of independence (+ Cramér's V)",
+    dropHint: "Two categorical columns. If your data is pre-aggregated (one row per cell with a frequency), also pick the counts column.",
+    methodNote: "<b>Why these statistics.</b> Cram\u00E9r's <i>V</i> uses the bias-corrected (Bergsma) adjustment. It is shown with a 90% CI: because the \u03C7\u00B2 test is one-sided, a 90% two-sided interval corresponds to the 95% test (Steiger, 2004; Lakens, 2013). Standardized residuals with |z| greater than about 2 flag the cells driving the association.",
+    roles: [
+      { key:'row',    kind:'categorical', label:'Row variable — categorical' },
+      { key:'col',    kind:'categorical', label:'Column variable — categorical' },
+      { key:'counts', kind:'numeric',     label:'Counts (optional) — frequency per cell, for pre-aggregated data', optional:true }
+    ],
+    defaults: { row:'Gender', col:'Age', counts:'Count' },
+    rProgram: `
+library(effectsize)
+rf <- factor(row); cf <- factor(col)
+if (exists("counts")) {
+  dd <- data.frame(rf = rf, cf = cf, w = as.numeric(counts))
+  tab <- xtabs(w ~ rf + cf, data = dd)
+} else { tab <- table(rf, cf) }
+ct <- chisq.test(tab, correct = FALSE)
+cv <- cramers_v(tab, adjust = TRUE, ci = 0.90, alternative = "two.sided")
+std <- ct$stdres
+print(ct)
+list(chi2 = unname(ct$statistic), df = unname(ct$parameter), p = ct$p.value,
+     N = sum(tab), V = cv[[1]], cil = cv$CI_low, ciu = cv$CI_high,
+     minexp = min(ct$expected), nr = nrow(tab), nc = ncol(tab),
+     rowlab = rownames(tab), collab = colnames(tab),
+     obs = as.vector(t(tab)), std = as.vector(t(std)))`,
+    async run({env, cols, active, used, dropped}){
+      document.getElementById('edaOut').classList.add('hidden');
+      if(!installed.has('effectsize')){ setStatus('Installing effectsize (one-time download)…',{busy:true}); await webR.installPackages(['effectsize']); installed.add('effectsize'); }
+      setStatus('Running in R…',{busy:true});
+      const shelter = await new webR.Shelter();
+      try{
+        const cap = await shelter.captureR(this.rProgram, { env });
+        const consoleText = cap.output.filter(o=>o.type==='stdout'||o.type==='stderr').map(o=>o.data).join('\n');
+        const R = rlistToObj(await cap.result.toJs());
+        const nr=R.nr[0], nc=R.nc[0], obs=R.obs, std=R.std, rowlab=R.rowlab, collab=R.collab;
+        const rowName=cols.row, colName=cols.col;
+        const headers=[{t:rowName}].concat(collab.map(c=>({t:String(c), num:true})));
+        const rows=[];
+        for(let i=0;i<nr;i++){ rows.push([{t:String(rowlab[i])}].concat(collab.map((_,j)=>({t:obs[i*nc+j], num:true})))); }
+        const sparse = R.minexp[0] < 5;
+        const warnH = sparse ? ` Some expected counts &lt; 5; interpret with caution (Fisher's exact is preferred for sparse tables).` : '';
+        const warnP = sparse ? ` Some expected counts < 5; interpret with caution (Fisher's exact is preferred for sparse tables).` : '';
+        const note = {
+          html:`<i>Note.</i> \u03C7\u00B2(${R.df[0]}, <i>N</i> = ${R.N[0]}) = ${f2(R.chi2[0])}, <i>p</i> ${pFmt(R.p[0])}. Cram\u00E9r's <i>V</i> (bias-corrected) = ${nz(R.V[0])}, 90% CI [${nz(R.cil[0])}, ${nz(R.ciu[0])}].${warnH}`,
+          plain:`Note. chi-square(${R.df[0]}, N = ${R.N[0]}) = ${f2(R.chi2[0])}, p ${pFmt(R.p[0])}. Cramer's V (bias-corrected) = ${nz(R.V[0])}, 90% CI [${nz(R.cil[0])}, ${nz(R.ciu[0])}].${warnP}`
+        };
+        const main = buildAPA({ title:`Contingency Table and Chi-Square Test of ${rowName} by ${colName}`, headers, rows, note });
+        let resid = `<p class="tnum" style="margin-top:18px">Standardized residuals</p><table class="apa-tbl"><thead><tr><th>${rowName}</th>${collab.map(c=>`<th class="num">${String(c)}</th>`).join('')}</tr></thead><tbody>`;
+        for(let i=0;i<nr;i++){ resid += `<tr><td>${String(rowlab[i])}</td>${collab.map((_,j)=>`<td class="num">${f2(std[i*nc+j])}</td>`).join('')}</tr>`; }
+        resid += `</tbody></table>`;
+        document.getElementById('console').textContent = consoleText;
+        document.getElementById('apa').innerHTML = main.screenHtml + resid;
+        lastResult = { plain: main.plain, htmlTable: main.copyHtml };
+        document.getElementById('outStep').classList.remove('hidden');
+        const mn=document.getElementById('methodNote'); mn.innerHTML=this.methodNote; mn.classList.remove('hidden');
+        setStatus(`Done. ${used} rows used${dropped?`, ${dropped} dropped for missing values`:''}.`);
+      } finally { await shelter.purge(); }
+    }
   }
 };
 
@@ -592,6 +655,7 @@ function eligible(kind){
   if(kind==='numeric') return headers.filter(h=>isNumericCol(columns[h]));
   if(kind==='group2')  return headers.filter(h=>levelsOf(columns[h]).length===2);
   if(kind==='group_any') return headers.filter(h=>{const k=levelsOf(columns[h]).length; return k>=2 && k<=12;});
+  if(kind==='categorical') return headers.filter(h=>{const k=levelsOf(columns[h]).length; return k>=2 && k<=30;});
   return headers.slice();
 }
 function renderRoles(){
