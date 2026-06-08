@@ -74,6 +74,12 @@
   .methodnote{margin-top:16px; font-size:12.5px; color:var(--ink-soft); line-height:1.55;
     border-left:3px solid var(--accent); background:var(--accent-soft); padding:10px 14px; border-radius:0 6px 6px 0}
   .methodnote b{color:var(--ink)}
+  .edaplots{display:grid; grid-template-columns:1fr 1fr; gap:18px; margin-top:18px}
+  @media(max-width:820px){.edaplots{grid-template-columns:1fr}}
+  .plotcard{background:#fff; border:1px solid var(--rule); border-radius:8px; padding:10px}
+  .plotcard .cap{font-size:12px; letter-spacing:.06em; text-transform:uppercase; color:var(--ink-soft); margin:0 0 8px}
+  .plotcard canvas{width:100%; height:auto; display:block}
+  #edaStats{margin-top:4px}
   .copy{font:inherit; font-size:12px; color:var(--accent); background:none; border:1px solid var(--accent);
         border-radius:5px; padding:3px 10px; cursor:pointer}
   .copy:hover{background:var(--accent-soft)}
@@ -128,6 +134,12 @@
     </div>
     <div class="methodnote hidden" id="methodNote"></div>
     <div class="hint">The two panels show the same analysis: R's native console output on the left, a clean APA table on the right (to read and paste). You write the interpretation.</div>
+  </div>
+
+  <div class="step hidden" id="edaOut">
+    <div class="step-h"><span class="n">04</span> Exploratory data analysis</div>
+    <div class="apa" id="edaStats"></div>
+    <div class="edaplots" id="edaPlots"></div>
   </div>
 
   <footer>Runs locally in your browser — no install, no server, no data leaves your machine. © 2026 Christian Bowers and Claude (Anthropic) · PolyForm Noncommercial 1.0.0 — free for noncommercial use; not for sale.</footer>
@@ -203,7 +215,76 @@ find_ncp_limits <- function(ncp, df, alpha) {
 }`;
 
 /* ============================ test registry ============================ */
+/* ============================ EDA helpers ============================ */
+let ggReady = false;
+function quantile7(s, p){ const n=s.length; if(!n) return NaN; const h=(n-1)*p, lo=Math.floor(h), hi=Math.ceil(h); return s[lo]+(h-lo)*(s[hi]-s[lo]); }
+function summ(vals){ const v=vals.slice().sort((a,b)=>a-b); const n=v.length; const mean=v.reduce((a,b)=>a+b,0)/n;
+  const sd = n>1 ? Math.sqrt(v.reduce((a,b)=>a+(b-mean)*(b-mean),0)/(n-1)) : NaN;
+  return {n, mean, sd, sem:sd/Math.sqrt(n), min:v[0], q1:quantile7(v,.25), mdn:quantile7(v,.5), q3:quantile7(v,.75), max:v[n-1]}; }
+function edaStatsHTML(vals, groups, vname, gname){
+  const rows=[];
+  if(groups){ const L=[...new Set(groups)].sort(); L.forEach(g=>rows.push([g, summ(vals.filter((_,i)=>groups[i]===g))])); }
+  else rows.push([vname, summ(vals)]);
+  const head = `<th>${groups?gname:'Variable'}</th>`+['n','M','SD','SEM','Min','Q1','Mdn','Q3','Max']
+    .map(h=>`<th class="num"><span style="font-style:italic">${h}</span></th>`).join('');
+  const body = rows.map(([lab,s])=>`<tr><td>${lab}</td>`+
+    [s.n, f2(s.mean), f2(s.sd), f2(s.sem), f2(s.min), f2(s.q1), f2(s.mdn), f2(s.q3), f2(s.max)]
+      .map(x=>`<td class="num">${x}</td>`).join('')+`</tr>`).join('');
+  return `<p class="tnum">Summary statistics</p><table class="apa-tbl"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+}
+function edaPlotCode(active, cols){
+  const has = k => active.some(r=>r.key===k);
+  const hasG=has('group'), hasS=has('second');
+  const q = s => String(s).replace(/'/g,'');
+  const vn=q(cols.variable), gn=hasG?q(cols.group):'', sn=hasS?q(cols.second):'';
+  const ACC="'#0f6b5c'", TH="theme_minimal(base_size=13)";
+  const lines=["library(ggplot2)"];
+  lines.push(hasG ? "df<-data.frame(v=as.numeric(variable), g=factor(group))" : "df<-data.frame(v=as.numeric(variable))");
+  if(hasS) lines.push("df$s<-as.numeric(second)");
+  lines.push(`print(ggplot(df,aes(x=v))+geom_histogram(bins=30,fill=${ACC},color='white')+${TH}+labs(x='${vn}',y='Count',title='Histogram')${hasG?"+facet_wrap(~g)":""})`);
+  lines.push(hasG
+    ? `print(ggplot(df,aes(x=g,y=v))+geom_boxplot(fill=${ACC},alpha=.6)+${TH}+labs(x='${gn}',y='${vn}',title='Boxplot by group'))`
+    : `print(ggplot(df,aes(y=v))+geom_boxplot(fill=${ACC},alpha=.6)+${TH}+labs(y='${vn}',title='Boxplot')+theme(axis.text.x=element_blank(),axis.ticks.x=element_blank()))`);
+  lines.push(`print(ggplot(df,aes(sample=v))+stat_qq(alpha=.6)+stat_qq_line(color=${ACC})+${TH}+labs(title='Normal Q-Q',x='Theoretical',y='Sample')${hasG?"+facet_wrap(~g)":""})`);
+  if(hasS) lines.push(`print(ggplot(df,aes(x=v,y=s${hasG?",color=g":""}))+geom_point(alpha=.6${hasG?"":`,color=${ACC}`})+${TH}+labs(x='${vn}',y='${sn}',title='Scatterplot'))`);
+  return { code: lines.join("; "), captions: ['Histogram','Boxplot','Normal Q-Q'].concat(hasS?['Scatterplot']:[]) };
+}
+
 const TESTS = {
+
+  eda: {
+    label: "Exploratory data analysis (summary + plots)",
+    dropHint: "Any dataset: choose a numeric variable, and optionally a grouping column and/or a second numeric variable.",
+    runLabel: "Explore data",
+    roles: [
+      { key:'variable', kind:'numeric',   label:'Variable — numeric' },
+      { key:'group',    kind:'group_any', label:'Group (optional) — splits stats and plots by group', optional:true },
+      { key:'second',   kind:'numeric',   label:'Second variable (optional) — enables a scatterplot', optional:true }
+    ],
+    defaults: {},
+    async run({env, cols, active, used, dropped}){
+      document.getElementById('outStep').classList.add('hidden');
+      if(!ggReady){ setStatus('Installing the plotting library (one-time download)…',{busy:true}); await webR.installPackages(['ggplot2']); ggReady=true; }
+      setStatus('Drawing plots in R…',{busy:true});
+      const {code, captions} = edaPlotCode(active, cols);
+      const shelter = await new webR.Shelter();
+      try{
+        const cap = await shelter.captureR(code, { env, captureGraphics:{ width:820, height:460 } });
+        document.getElementById('edaStats').innerHTML =
+          edaStatsHTML(env.variable, env.group||null, cols.variable, cols.group);
+        const wrap=document.getElementById('edaPlots'); wrap.innerHTML='';
+        (cap.images||[]).forEach((img,i)=>{
+          const card=document.createElement('div'); card.className='plotcard';
+          const c=document.createElement('p'); c.className='cap'; c.textContent=captions[i]||('Plot '+(i+1));
+          const cv=document.createElement('canvas'); cv.width=img.width; cv.height=img.height;
+          cv.getContext('2d').drawImage(img,0,0);
+          card.appendChild(c); card.appendChild(cv); wrap.appendChild(card);
+        });
+        document.getElementById('edaOut').classList.remove('hidden');
+        setStatus(`Done. ${used} rows used${dropped?`, ${dropped} dropped for missing values`:''}.`);
+      } finally { await shelter.purge(); }
+    }
+  },
 
   ind_means: {
     label: "Independent means — Welch's t test + Hedges' g*s",
@@ -349,6 +430,7 @@ Object.keys(TESTS).forEach(id=>{
 testSel.addEventListener('change', ()=>{
   const t = TESTS[testSel.value];
   document.getElementById('outStep').classList.add('hidden');
+  document.getElementById('edaOut').classList.add('hidden');
   if(!t){ uploadStep.classList.add('hidden'); roleStep.classList.add('hidden'); return; }
   document.getElementById('dropHint').textContent = t.dropHint;
   uploadStep.classList.remove('hidden');
@@ -371,13 +453,15 @@ function handleFile(file){
 function eligible(kind){
   if(kind==='numeric') return headers.filter(h=>isNumericCol(columns[h]));
   if(kind==='group2')  return headers.filter(h=>levelsOf(columns[h]).length===2);
+  if(kind==='group_any') return headers.filter(h=>{const k=levelsOf(columns[h]).length; return k>=2 && k<=12;});
   return headers.slice();
 }
 function renderRoles(){
   const t = TESTS[testSel.value];
   rolesContainer.innerHTML = t.roles.map(role=>{
     const opts = eligible(role.kind);
-    const list = opts.map(h=>`<option>${h}</option>`).join('');
+    let list = opts.map(h=>`<option>${h}</option>`).join('');
+    if(role.optional) list = `<option value="">— none —</option>` + list;
     return `<div><label class="fld" for="role_${role.key}">${role.label}</label>
             <select data-role="${role.key}" id="role_${role.key}">${list||'<option value="">(no eligible column)</option>'}</select></div>`;
   }).join('');
@@ -388,6 +472,7 @@ function renderRoles(){
     if(def && [...sel.options].some(o=>o.value===def)) sel.value=def;
     sel.addEventListener('change', validate);
   });
+  runBtn.textContent = t.runLabel || 'Run analysis';
   validate();
 }
 
@@ -397,9 +482,11 @@ function currentCols(){
 function validate(){
   const t = TESTS[testSel.value];
   if(!t || !headers.length){ runBtn.disabled=true; return; }
-  const cols = currentCols(); const vals = Object.values(cols);
-  let ok = webRReady && vals.every(v=>v); let msg='';
-  if(ok && new Set(vals).size !== vals.length){ ok=false; msg='Each role needs a different column.'; }
+  const cols = currentCols();
+  let ok = webRReady, msg='';
+  for(const role of t.roles){ if(!role.optional && !cols[role.key]) ok=false; }
+  const chosen = t.roles.map(r=>cols[r.key]).filter(v=>v);
+  if(ok && new Set(chosen).size !== chosen.length){ ok=false; msg='Each role needs a different column.'; }
   for(const role of t.roles){
     if(role.kind==='group2' && cols[role.key] && levelsOf(columns[cols[role.key]]).length!==2){ ok=false; msg='The group column must have exactly 2 levels.'; }
   }
@@ -413,21 +500,31 @@ runBtn.addEventListener('click', async ()=>{
   const t = TESTS[testSel.value];
   runBtn.disabled=true; setStatus('Running in R…',{busy:true});
   const cols = currentCols();
+  const active = t.roles.filter(r=>cols[r.key]);   // skip optional roles left empty
 
-  // gather + listwise/pairwise NA drop across all selected role columns
-  const rawLen = columns[Object.values(cols)[0]].length;
-  const env = {}; t.roles.forEach(r=>env[r.key]=[]);
+  // gather + listwise NA drop across the active role columns
+  const rawLen = columns[cols[active[0].key]].length;
+  const env = {}; active.forEach(r=>env[r.key]=[]);
   let dropped=0;
   for(let i=0;i<rawLen;i++){
     let keep=true;
-    for(const role of t.roles){ const v=columns[cols[role.key]][i];
+    for(const role of active){ const v=columns[cols[role.key]][i];
       if(isNA(v) || (role.kind==='numeric' && !Number.isFinite(Number(v)))){ keep=false; break; } }
     if(!keep){ dropped++; continue; }
-    for(const role of t.roles){ const v=columns[cols[role.key]][i];
+    for(const role of active){ const v=columns[cols[role.key]][i];
       env[role.key].push(role.kind==='numeric' ? Number(v) : String(v).trim()); }
   }
   const used = rawLen - dropped;
 
+  // custom-run modules (EDA) manage their own output area
+  if(t.run){
+    try{ await t.run({env, cols, active, used, dropped}); }
+    catch(e){ setStatus('R error: '+e.message,{err:true}); }
+    finally{ runBtn.disabled=false; }
+    return;
+  }
+
+  document.getElementById('edaOut').classList.add('hidden');
   const shelter = await new webR.Shelter();
   try{
     const cap = await shelter.captureR(t.rProgram, { env });
