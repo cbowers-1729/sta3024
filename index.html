@@ -119,6 +119,14 @@
       <label class="fld" for="edaPalette">Plot palette</label>
       <select id="edaPalette" style="max-width:320px"></select>
     </div>
+    <div id="confControls" style="margin-top:14px">
+      <label class="fld" for="confSel">Confidence level for intervals</label>
+      <select id="confSel" style="max-width:200px">
+        <option value="0.90">90%</option>
+        <option value="0.95" selected>95%</option>
+        <option value="0.99">99%</option>
+      </select>
+    </div>
     <div class="rolewarn" id="roleWarn"></div>
     <div class="run"><button class="run-btn" id="runBtn" disabled>Run analysis</button></div>
     <div class="status" id="status"></div>
@@ -155,6 +163,7 @@ import { WebR } from 'https://webr.r-wasm.org/latest/webr.mjs';
 /* ============================ shared formatters ============================ */
 const nz = (x,d=2)=>{ const s=(x<0?'-':'')+Math.abs(x).toFixed(d); return s.replace(/^(-?)0\./,'$1.'); };
 const f2 = (x,d=2)=> Number(x).toFixed(d);
+const pct = (c)=> Math.round(Number(c)*100)+'%';
 const pFmt = p => p < .001 ? '< .001' : '= ' + nz(p,3);
 
 /* ============================ APA table builder ============================ */
@@ -342,14 +351,14 @@ g.star.ci <- function(x.bar.1, x.bar.2, s.1, s.2, n.1, n.2, alpha) {
 }
 d <- data.frame(resp = as.numeric(resp), grp = factor(grp))
 lv <- levels(d$grp)
-tt <- t.test(resp ~ grp, data = d)
+tt <- t.test(resp ~ grp, data = d, conf.level = conf)
 g1 <- d$resp[d$grp == lv[1]]; g2 <- d$resp[d$grp == lv[2]]
 m1 <- mean(g1); s1 <- sd(g1); n1 <- length(g1)
 m2 <- mean(g2); s2 <- sd(g2); n2 <- length(g2)
-g <- g.star.ci(m1, m2, s1, s2, n1, n2, 0.05)
+g <- g.star.ci(m1, m2, s1, s2, n1, n2, 1 - conf)
 print(tt)
 cat(sprintf("\\nGroups compared: %s minus %s\\n", lv[1], lv[2]))
-cat(sprintf("Hedges g*s = %.3f, 95%% CI [%.3f, %.3f]\\n", g$g.star, g$g.star.low, g$g.star.up))
+cat(sprintf("Hedges g*s = %.3f, %.0f%% CI [%.3f, %.3f]\\n", g$g.star, conf*100, g$g.star.low, g$g.star.up))
 c(t=unname(tt$statistic), df=unname(tt$parameter), p=tt$p.value,
   md=m1-m2, cil=tt$conf.int[1], ciu=tt$conf.int[2],
   g=g$g.star, gl=g$g.star.low, gu=g$g.star.up,
@@ -364,8 +373,8 @@ c(t=unname(tt$statistic), df=unname(tt$parameter), p=tt$p.value,
           [{t:l2},{t:R.n2,num:true},{t:f2(R.m2),num:true},{t:f2(R.s2),num:true}]
         ],
         note:{
-          html:`<i>Note.</i> Welch's <i>t</i>(${f2(R.df)}) = ${f2(R.t)}, <i>p</i> ${pFmt(R.p)}, two-sided. Mean difference (${l1} &minus; ${l2}) = ${f2(R.md)}, 95% CI [${f2(R.cil)}, ${f2(R.ciu)}]. Hedges' <i>g*</i><sub>s</sub> = ${nz(R.g)}, 95% CI [${nz(R.gl)}, ${nz(R.gu)}].`,
-          plain:`Note. Welch's t(${f2(R.df)}) = ${f2(R.t)}, p ${pFmt(R.p)}, two-sided. Mean difference (${l1} - ${l2}) = ${f2(R.md)}, 95% CI [${f2(R.cil)}, ${f2(R.ciu)}]. Hedges' g*s = ${nz(R.g)}, 95% CI [${nz(R.gl)}, ${nz(R.gu)}].`
+          html:`<i>Note.</i> Welch's <i>t</i>(${f2(R.df)}) = ${f2(R.t)}, <i>p</i> ${pFmt(R.p)}, two-sided. Mean difference (${l1} &minus; ${l2}) = ${f2(R.md)}, ${pct(ctx.conf)} CI [${f2(R.cil)}, ${f2(R.ciu)}]. Hedges' <i>g*</i><sub>s</sub> = ${nz(R.g)}, ${pct(ctx.conf)} CI [${nz(R.gl)}, ${nz(R.gu)}].`,
+          plain:`Note. Welch's t(${f2(R.df)}) = ${f2(R.t)}, p ${pFmt(R.p)}, two-sided. Mean difference (${l1} - ${l2}) = ${f2(R.md)}, ${pct(ctx.conf)} CI [${f2(R.cil)}, ${f2(R.ciu)}]. Hedges' g*s = ${nz(R.g)}, ${pct(ctx.conf)} CI [${nz(R.gl)}, ${nz(R.gu)}].`
         }
       });
     }
@@ -385,9 +394,9 @@ c(t=unname(tt$statistic), df=unname(tt$parameter), p=tt$p.value,
 x <- as.numeric(pre); y <- as.numeric(post)
 dvec <- x - y
 n <- length(dvec); md <- mean(dvec); sdd <- sd(dvec)
-tt <- t.test(x, y, paired = TRUE)
+tt <- t.test(x, y, paired = TRUE, conf.level = conf)
 t.obs <- unname(tt$statistic); df <- n - 1
-lim <- find_ncp_limits(t.obs, df, 0.05)
+lim <- find_ncp_limits(t.obs, df, 1 - conf)
 dz <- md / sdd
 m <- df/2
 if (m >= 170) { J <- (1 - 3/(4*df - 1)) } else { J <- gamma(m)/(gamma(m-0.5)*sqrt(m)) }
@@ -396,7 +405,7 @@ gz.low <- (lim$Lower.Limit / sqrt(n)) * J
 gz.up  <- (lim$Upper.Limit  / sqrt(n)) * J
 print(tt)
 cat(sprintf("\\nMean of differences = %.3f, SD of differences = %.3f, n pairs = %d\\n", md, sdd, n))
-cat(sprintf("Hedges g_z = %.3f, 95%% CI [%.3f, %.3f]\\n", gz, gz.low, gz.up))
+cat(sprintf("Hedges g_z = %.3f, %.0f%% CI [%.3f, %.3f]\\n", gz, conf*100, gz.low, gz.up))
 c(t=t.obs, df=df, p=tt$p.value, md=md, cil=tt$conf.int[1], ciu=tt$conf.int[2],
   g=gz, gl=gz.low, gu=gz.up, sdd=sdd, n=n,
   mpre=mean(x), sdpre=sd(x), mpost=mean(y), sdpost=sd(y))`,
@@ -410,8 +419,8 @@ c(t=t.obs, df=df, p=tt$p.value, md=md, cil=tt$conf.int[1], ciu=tt$conf.int[2],
           [{t:post},{t:R.n,num:true},{t:f2(R.mpost),num:true},{t:f2(R.sdpost),num:true}]
         ],
         note:{
-          html:`<i>Note.</i> Paired <i>t</i>(${f2(R.df)}) = ${f2(R.t)}, <i>p</i> ${pFmt(R.p)}, two-sided. Mean difference (${pre} &minus; ${post}) = ${f2(R.md)}, 95% CI [${f2(R.cil)}, ${f2(R.ciu)}]. Hedges' <i>g</i><sub>z</sub> = ${nz(R.g)}, 95% CI [${nz(R.gl)}, ${nz(R.gu)}].`,
-          plain:`Note. Paired t(${f2(R.df)}) = ${f2(R.t)}, p ${pFmt(R.p)}, two-sided. Mean difference (${pre} - ${post}) = ${f2(R.md)}, 95% CI [${f2(R.cil)}, ${f2(R.ciu)}]. Hedges' g_z = ${nz(R.g)}, 95% CI [${nz(R.gl)}, ${nz(R.gu)}].`
+          html:`<i>Note.</i> Paired <i>t</i>(${f2(R.df)}) = ${f2(R.t)}, <i>p</i> ${pFmt(R.p)}, two-sided. Mean difference (${pre} &minus; ${post}) = ${f2(R.md)}, ${pct(ctx.conf)} CI [${f2(R.cil)}, ${f2(R.ciu)}]. Hedges' <i>g</i><sub>z</sub> = ${nz(R.g)}, ${pct(ctx.conf)} CI [${nz(R.gl)}, ${nz(R.gu)}].`,
+          plain:`Note. Paired t(${f2(R.df)}) = ${f2(R.t)}, p ${pFmt(R.p)}, two-sided. Mean difference (${pre} - ${post}) = ${f2(R.md)}, ${pct(ctx.conf)} CI [${f2(R.cil)}, ${f2(R.ciu)}]. Hedges' g_z = ${nz(R.g)}, ${pct(ctx.conf)} CI [${nz(R.gl)}, ${nz(R.gu)}].`
         }
       });
     }
@@ -441,11 +450,11 @@ se <- sqrt(vx/(nx*ny^2) + vy/(ny*nx^2))
 stat <- (pst - 0.5)/se
 df <- ((nx*vx + ny*vy)^2)/(((nx*vx)^2)/(nx-1) + ((ny*vy)^2)/(ny-1))
 p <- 2*pt(abs(stat), df, lower.tail = FALSE)
-ci <- pst + c(-1,1)*qt(0.975, df)*se
+ci <- pst + c(-1,1)*qt(1 - (1-conf)/2, df)*se
 cat("\\n\\tBrunner-Munzel Test\\n\\n")
 cat("data:  resp by grp\\n")
 cat(sprintf("Brunner-Munzel statistic = %.4f, df = %.3f, p-value = %.5g\\n", stat, df, p))
-cat(sprintf("95 percent confidence interval: %.4f %.4f\\n", ci[1], ci[2]))
+cat(sprintf("%.0f percent confidence interval: %.4f %.4f\\n", conf*100, ci[1], ci[2]))
 cat(sprintf("sample estimate, P(X<Y)+.5*P(X=Y) = %.4f\\n", pst))
 cat(sprintf("\\nGroups: %s vs %s\\n", lv[1], lv[2]))
 c(stat=stat, df=df, p=p, phat=pst, cil=ci[1], ciu=ci[2],
@@ -460,8 +469,8 @@ c(stat=stat, df=df, p=p, phat=pst, cil=ci[1], ciu=ci[2],
           [{t:l2},{t:R.n2,num:true},{t:f2(R.md2),num:true}]
         ],
         note:{
-          html:`<i>Note.</i> Brunner-Munzel <i>W</i>(${f2(R.df)}) = ${f2(R.stat)}, <i>p</i> ${pFmt(R.p)}, two-sided. Relative effect <i>p&#770;</i> = ${nz(R.phat)}, 95% CI [${nz(R.cil)}, ${nz(R.ciu)}] \u2014 the estimated probability that a randomly chosen ${resp} from ${l2} exceeds one from ${l1} (.50 indicates no tendency). Mdn = median.`,
-          plain:`Note. Brunner-Munzel W(${f2(R.df)}) = ${f2(R.stat)}, p ${pFmt(R.p)}, two-sided. Relative effect p-hat = ${nz(R.phat)}, 95% CI [${nz(R.cil)}, ${nz(R.ciu)}] - the estimated probability that a randomly chosen ${resp} from ${l2} exceeds one from ${l1} (.50 indicates no tendency). Mdn = median.`
+          html:`<i>Note.</i> Brunner-Munzel <i>W</i>(${f2(R.df)}) = ${f2(R.stat)}, <i>p</i> ${pFmt(R.p)}, two-sided. Relative effect <i>p&#770;</i> = ${nz(R.phat)}, ${pct(ctx.conf)} CI [${nz(R.cil)}, ${nz(R.ciu)}] \u2014 the estimated probability that a randomly chosen ${resp} from ${l2} exceeds one from ${l1} (.50 indicates no tendency). Mdn = median.`,
+          plain:`Note. Brunner-Munzel W(${f2(R.df)}) = ${f2(R.stat)}, p ${pFmt(R.p)}, two-sided. Relative effect p-hat = ${nz(R.phat)}, ${pct(ctx.conf)} CI [${nz(R.cil)}, ${nz(R.ciu)}] - the estimated probability that a randomly chosen ${resp} from ${l2} exceeds one from ${l1} (.50 indicates no tendency). Mdn = median.`
         }
       });
     }
@@ -482,9 +491,9 @@ c(stat=stat, df=df, p=p, phat=pst, cil=ci[1], ciu=ci[2],
     rProgram: FIND_NCP + `
 x <- as.numeric(resp)
 n <- length(x); m <- mean(x); s <- sd(x)
-tt <- t.test(x, mu = mu0)
+tt <- t.test(x, mu = mu0, conf.level = conf)
 t.obs <- unname(tt$statistic); df <- n - 1
-lim <- find_ncp_limits(t.obs, df, 0.05)
+lim <- find_ncp_limits(t.obs, df, 1 - conf)
 dd <- (m - mu0)/s
 mm <- df/2
 if (mm >= 170) { J <- (1 - 3/(4*df - 1)) } else { J <- gamma(mm)/(gamma(mm-0.5)*sqrt(mm)) }
@@ -492,7 +501,7 @@ g <- dd * J
 g.low <- (lim$Lower.Limit / sqrt(n)) * J
 g.up  <- (lim$Upper.Limit  / sqrt(n)) * J
 print(tt)
-cat(sprintf("\\nHedges g = %.3f, 95%% CI [%.3f, %.3f]\\n", g, g.low, g.up))
+cat(sprintf("\\nHedges g = %.3f, %.0f%% CI [%.3f, %.3f]\\n", g, conf*100, g.low, g.up))
 c(t=t.obs, df=df, p=tt$p.value, m=m, s=s, n=n, mu0=mu0,
   cil=tt$conf.int[1], ciu=tt$conf.int[2], g=g, gl=g.low, gu=g.up)`,
     render(R, ctx){
@@ -505,15 +514,15 @@ c(t=t.obs, df=df, p=tt$p.value, m=m, s=s, n=n, mu0=mu0,
           [{t:resp},{t:R.n,num:true},{t:f2(R.m),num:true},{t:f2(R.s),num:true}]
         ],
         note:{
-          html:`<i>Note.</i> One-sample <i>t</i>(${f2(R.df)}) = ${f2(R.t)}, <i>p</i> ${pFmt(R.p)}, two-sided, test value = ${mu}. 95% CI for the mean [${f2(R.cil)}, ${f2(R.ciu)}]. Hedges' <i>g</i> = ${nz(R.g)}, 95% CI [${nz(R.gl)}, ${nz(R.gu)}].`,
-          plain:`Note. One-sample t(${f2(R.df)}) = ${f2(R.t)}, p ${pFmt(R.p)}, two-sided, test value = ${mu}. 95% CI for the mean [${f2(R.cil)}, ${f2(R.ciu)}]. Hedges' g = ${nz(R.g)}, 95% CI [${nz(R.gl)}, ${nz(R.gu)}].`
+          html:`<i>Note.</i> One-sample <i>t</i>(${f2(R.df)}) = ${f2(R.t)}, <i>p</i> ${pFmt(R.p)}, two-sided, test value = ${mu}. ${pct(ctx.conf)} CI for the mean [${f2(R.cil)}, ${f2(R.ciu)}]. Hedges' <i>g</i> = ${nz(R.g)}, ${pct(ctx.conf)} CI [${nz(R.gl)}, ${nz(R.gu)}].`,
+          plain:`Note. One-sample t(${f2(R.df)}) = ${f2(R.t)}, p ${pFmt(R.p)}, two-sided, test value = ${mu}. ${pct(ctx.conf)} CI for the mean [${f2(R.cil)}, ${f2(R.ciu)}]. Hedges' g = ${nz(R.g)}, ${pct(ctx.conf)} CI [${nz(R.gl)}, ${nz(R.gu)}].`
         }
       });
     }
   },
 
   chisq: {
-    label: "Chi-square test of independence (+ Cramér's V)",
+    label: "Chi-square test of independence/homogeneity (+ Cramér's V)",
     dropHint: "Two categorical columns. If your data is pre-aggregated (one row per cell with a frequency), also pick the counts column.",
     methodNote: "<b>Why these statistics.</b> Cram\u00E9r's <i>V</i> uses the bias-corrected (Bergsma) adjustment. It is shown with a 90% CI: because the \u03C7\u00B2 test is one-sided, a 90% two-sided interval corresponds to the 95% test (Steiger, 2004; Lakens, 2013). Standardized residuals with |z| greater than about 2 flag the cells driving the association.",
     roles: [
@@ -530,9 +539,12 @@ if (exists("counts")) {
   tab <- xtabs(w ~ rf + cf, data = dd)
 } else { tab <- table(rf, cf) }
 ct <- chisq.test(tab, correct = FALSE)
-cv <- cramers_v(tab, adjust = TRUE, ci = 0.90, alternative = "two.sided")
+cv <- cramers_v(tab, adjust = TRUE, ci = 2*conf - 1, alternative = "two.sided")
 std <- ct$stdres
 print(ct)
+cat("\\nObserved counts:\\n"); print(tab)
+cat("\\nExpected counts (each should be >= 5):\\n"); print(round(ct$expected, 2))
+cat("\\nRow percentages (% of row total):\\n"); print(round(prop.table(tab, 1) * 100, 1))
 list(chi2 = unname(ct$statistic), df = unname(ct$parameter), p = ct$p.value,
      N = sum(tab), V = cv[[1]], cil = cv$CI_low, ciu = cv$CI_high,
      minexp = min(ct$expected), nr = nrow(tab), nc = ncol(tab),
@@ -553,11 +565,12 @@ list(chi2 = unname(ct$statistic), df = unname(ct$parameter), p = ct$p.value,
         const rows=[];
         for(let i=0;i<nr;i++){ rows.push([{t:String(rowlab[i])}].concat(collab.map((_,j)=>({t:obs[i*nc+j], num:true})))); }
         const sparse = R.minexp[0] < 5;
+        const ciPct = Math.round((2*env.conf - 1)*100);
         const warnH = sparse ? ` Some expected counts &lt; 5; interpret with caution (Fisher's exact is preferred for sparse tables).` : '';
         const warnP = sparse ? ` Some expected counts < 5; interpret with caution (Fisher's exact is preferred for sparse tables).` : '';
         const note = {
-          html:`<i>Note.</i> \u03C7\u00B2(${R.df[0]}, <i>N</i> = ${R.N[0]}) = ${f2(R.chi2[0])}, <i>p</i> ${pFmt(R.p[0])}. Cram\u00E9r's <i>V</i> (bias-corrected) = ${nz(R.V[0])}, 90% CI [${nz(R.cil[0])}, ${nz(R.ciu[0])}].${warnH}`,
-          plain:`Note. chi-square(${R.df[0]}, N = ${R.N[0]}) = ${f2(R.chi2[0])}, p ${pFmt(R.p[0])}. Cramer's V (bias-corrected) = ${nz(R.V[0])}, 90% CI [${nz(R.cil[0])}, ${nz(R.ciu[0])}].${warnP}`
+          html:`<i>Note.</i> \u03C7\u00B2(${R.df[0]}, <i>N</i> = ${R.N[0]}) = ${f2(R.chi2[0])}, <i>p</i> ${pFmt(R.p[0])}. Cram\u00E9r's <i>V</i> (bias-corrected) = ${nz(R.V[0])}, ${ciPct}% CI [${nz(R.cil[0])}, ${nz(R.ciu[0])}].${warnH}`,
+          plain:`Note. chi-square(${R.df[0]}, N = ${R.N[0]}) = ${f2(R.chi2[0])}, p ${pFmt(R.p[0])}. Cramer's V (bias-corrected) = ${nz(R.V[0])}, ${ciPct}% CI [${nz(R.cil[0])}, ${nz(R.ciu[0])}].${warnP}`
         };
         const main = buildAPA({ title:`Contingency Table and Chi-Square Test of ${rowName} by ${colName}`, headers, rows, note });
         let resid = `<p class="tnum" style="margin-top:18px">Standardized residuals</p><table class="apa-tbl"><thead><tr><th>${rowName}</th>${collab.map(c=>`<th class="num">${String(c)}</th>`).join('')}</tr></thead><tbody>`;
@@ -617,7 +630,8 @@ Object.keys(TESTS).forEach(id=>{
 const edaPaletteEl = document.getElementById('edaPalette');
 Object.entries(PALETTES).forEach(([k,p])=>{ const o=document.createElement('option'); o.value=k; o.textContent=p.name; edaPaletteEl.appendChild(o); });
 edaPaletteEl.value = 'forest';
-function updateEdaControls(){ document.getElementById('edaControls').classList.toggle('hidden', testSel.value!=='eda'); }
+function updateEdaControls(){ document.getElementById('edaControls').classList.toggle('hidden', testSel.value!=='eda'); document.getElementById('confControls').classList.toggle('hidden', testSel.value==='eda'); }
+function currentConf(){ return Number(document.getElementById('confSel').value); }
 edaPaletteEl.addEventListener('change', async ()=>{
   if(testSel.value==='eda' && lastEda){
     runBtn.disabled=true;
@@ -734,6 +748,7 @@ runBtn.addEventListener('click', async ()=>{
   if(t.params) t.params.forEach(pp=>{
     env[pp.key] = Number(rolesContainer.querySelector(`[data-param="${pp.key}"]`).value);
   });
+  env.conf = currentConf();   // confidence level available to every module's R
 
   // custom-run modules (EDA) manage their own output area
   if(t.run){
@@ -757,7 +772,7 @@ runBtn.addEventListener('click', async ()=>{
     const vals = await cap.result.toArray();
     const R={}; t.resultKeys.forEach((k,i)=>R[k]=vals[i]);
 
-    const ctx = { cols, levels:{} };
+    const ctx = { cols, levels:{}, conf: env.conf };
     t.roles.forEach(role=>{ if(role.kind==='group2') ctx.levels[role.key]=levelsOf(columns[cols[role.key]]).sort(); });
 
     const out = t.render(R, ctx);
