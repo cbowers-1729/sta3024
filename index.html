@@ -221,6 +221,7 @@ find_ncp_limits <- function(ncp, df, alpha) {
 /* ============================ test registry ============================ */
 /* ============================ EDA helpers ============================ */
 let ggReady = false;
+const installed = new Set();
 function quantile7(s, p){ const n=s.length; if(!n) return NaN; const h=(n-1)*p, lo=Math.floor(h), hi=Math.ceil(h); return s[lo]+(h-lo)*(s[hi]-s[lo]); }
 function summ(vals){ const v=vals.slice().sort((a,b)=>a-b); const n=v.length; const mean=v.reduce((a,b)=>a+b,0)/n;
   const sd = n>1 ? Math.sqrt(v.reduce((a,b)=>a+(b-mean)*(b-mean),0)/(n-1)) : NaN;
@@ -412,6 +413,45 @@ c(t=t.obs, df=df, p=tt$p.value, md=md, cil=tt$conf.int[1], ciu=tt$conf.int[2],
         }
       });
     }
+  },
+
+  brunner: {
+    label: "Independent groups, rank-based — Brunner-Munzel test",
+    dropHint: "Long/tidy data: a numeric outcome column and a 2-level grouping column.",
+    packages: ['brunnermunzel'],
+    methodNote: "<b>Why this test.</b> Brunner-Munzel is preferred over the Wilcoxon-Mann-Whitney test: MW's equal-distribution assumption fails under unequal spread or shape, where Brunner-Munzel keeps Type I error controlled with comparable power (Karch, 2021). It tests stochastic dominance \u2014 whether scores in one group tend to exceed the other \u2014 not a difference in medians (Divine et al., 2018).",
+    roles: [
+      { key:'resp', kind:'numeric', label:'Response — numeric outcome' },
+      { key:'grp',  kind:'group2',  label:'Group — must have exactly 2 levels' }
+    ],
+    defaults: { resp:'bwt', grp:'smoke' },
+    resultKeys: ['stat','df','p','phat','cil','ciu','n1','md1','n2','md2'],
+    rProgram: `
+library(brunnermunzel)
+d <- data.frame(resp = as.numeric(resp), grp = factor(grp))
+lv <- levels(d$grp)
+bm <- brunnermunzel.test(resp ~ grp, data = d)
+g1 <- d$resp[d$grp == lv[1]]; g2 <- d$resp[d$grp == lv[2]]
+print(bm)
+cat(sprintf("\\nGroups: %s vs %s\\n", lv[1], lv[2]))
+c(stat=unname(bm$statistic), df=unname(bm$parameter), p=bm$p.value,
+  phat=unname(bm$estimate), cil=bm$conf.int[1], ciu=bm$conf.int[2],
+  n1=length(g1), md1=median(g1), n2=length(g2), md2=median(g2))`,
+    render(R, ctx){
+      const [l1,l2]=ctx.levels.grp, grp=ctx.cols.grp, resp=ctx.cols.resp;
+      return buildAPA({
+        title:`Descriptive Statistics and Brunner-Munzel Test for ${resp} by ${grp}`,
+        headers:[{t:grp},{t:'n',it:true,num:true},{t:'Mdn',it:true,num:true}],
+        rows:[
+          [{t:l1},{t:R.n1,num:true},{t:f2(R.md1),num:true}],
+          [{t:l2},{t:R.n2,num:true},{t:f2(R.md2),num:true}]
+        ],
+        note:{
+          html:`<i>Note.</i> Brunner-Munzel <i>W</i>(${f2(R.df)}) = ${f2(R.stat)}, <i>p</i> ${pFmt(R.p)}, two-sided. Relative effect <i>p&#770;</i> = ${nz(R.phat)}, 95% CI [${nz(R.cil)}, ${nz(R.ciu)}] \u2014 the estimated probability that a randomly chosen ${resp} from ${l2} exceeds one from ${l1} (.50 indicates no tendency). Mdn = median.`,
+          plain:`Note. Brunner-Munzel W(${f2(R.df)}) = ${f2(R.stat)}, p ${pFmt(R.p)}, two-sided. Relative effect p-hat = ${nz(R.phat)}, 95% CI [${nz(R.cil)}, ${nz(R.ciu)}] - the estimated probability that a randomly chosen ${resp} from ${l2} exceeds one from ${l1} (.50 indicates no tendency). Mdn = median.`
+        }
+      });
+    }
   }
 };
 
@@ -568,6 +608,12 @@ runBtn.addEventListener('click', async ()=>{
   }
 
   document.getElementById('edaOut').classList.add('hidden');
+  if(t.packages){
+    for(const pkg of t.packages){
+      if(!installed.has(pkg)){ setStatus(`Installing ${pkg} (one-time download)…`,{busy:true}); await webR.installPackages([pkg]); installed.add(pkg); }
+    }
+    setStatus('Running in R…',{busy:true});
+  }
   const shelter = await new webR.Shelter();
   try{
     const cap = await shelter.captureR(t.rProgram, { env });
