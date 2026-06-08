@@ -115,6 +115,10 @@
   <div class="step hidden" id="roleStep">
     <div class="step-h"><span class="n">03</span> Assign column roles</div>
     <div class="roles" id="rolesContainer"></div>
+    <div id="edaControls" class="hidden" style="margin-top:14px">
+      <label class="fld" for="edaPalette">Plot palette</label>
+      <select id="edaPalette" style="max-width:320px"></select>
+    </div>
     <div class="rolewarn" id="roleWarn"></div>
     <div class="run"><button class="run-btn" id="runBtn" disabled>Run analysis</button></div>
     <div class="status" id="status"></div>
@@ -232,22 +236,62 @@ function edaStatsHTML(vals, groups, vname, gname){
       .map(x=>`<td class="num">${x}</td>`).join('')+`</tr>`).join('');
   return `<p class="tnum">Summary statistics</p><table class="apa-tbl"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
 }
-function edaPlotCode(active, cols){
+function edaPlotCode(active, cols, pal){
   const has = k => active.some(r=>r.key===k);
   const hasG=has('group'), hasS=has('second');
   const q = s => String(s).replace(/'/g,'');
   const vn=q(cols.variable), gn=hasG?q(cols.group):'', sn=hasS?q(cols.second):'';
-  const ACC="'#0f6b5c'", TH="theme_minimal(base_size=13)";
+  const ACC=`'${pal.accent}'`;
+  const CATS='c('+pal.cats.map(c=>`'${c}'`).join(',')+')';
+  const TH="theme_minimal(base_size=13)";
   const lines=["library(ggplot2)"];
   lines.push(hasG ? "df<-data.frame(v=as.numeric(variable), g=factor(group))" : "df<-data.frame(v=as.numeric(variable))");
   if(hasS) lines.push("df$s<-as.numeric(second)");
-  lines.push(`print(ggplot(df,aes(x=v))+geom_histogram(bins=30,fill=${ACC},color='white')+${TH}+labs(x='${vn}',y='Count',title='Histogram')${hasG?"+facet_wrap(~g)":""})`);
   lines.push(hasG
-    ? `print(ggplot(df,aes(x=g,y=v))+geom_boxplot(fill=${ACC},alpha=.6)+${TH}+labs(x='${gn}',y='${vn}',title='Boxplot by group'))`
-    : `print(ggplot(df,aes(y=v))+geom_boxplot(fill=${ACC},alpha=.6)+${TH}+labs(y='${vn}',title='Boxplot')+theme(axis.text.x=element_blank(),axis.ticks.x=element_blank()))`);
-  lines.push(`print(ggplot(df,aes(sample=v))+stat_qq(alpha=.6)+stat_qq_line(color=${ACC})+${TH}+labs(title='Normal Q-Q',x='Theoretical',y='Sample')${hasG?"+facet_wrap(~g)":""})`);
-  if(hasS) lines.push(`print(ggplot(df,aes(x=v,y=s${hasG?",color=g":""}))+geom_point(alpha=.6${hasG?"":`,color=${ACC}`})+${TH}+labs(x='${vn}',y='${sn}',title='Scatterplot'))`);
+    ? `print(ggplot(df,aes(x=v,fill=g))+geom_histogram(bins=30,color='white')+scale_fill_manual(values=${CATS})+${TH}+labs(x='${vn}',y='Count',title='Histogram')+facet_wrap(~g)+guides(fill='none'))`
+    : `print(ggplot(df,aes(x=v))+geom_histogram(bins=30,fill=${ACC},color='white')+${TH}+labs(x='${vn}',y='Count',title='Histogram'))`);
+  lines.push(hasG
+    ? `print(ggplot(df,aes(x=g,y=v,fill=g))+geom_boxplot(alpha=.7)+scale_fill_manual(values=${CATS})+${TH}+labs(x='${gn}',y='${vn}',title='Boxplot by group')+guides(fill='none'))`
+    : `print(ggplot(df,aes(y=v))+geom_boxplot(fill=${ACC},alpha=.7)+${TH}+labs(y='${vn}',title='Boxplot')+theme(axis.text.x=element_blank(),axis.ticks.x=element_blank()))`);
+  lines.push(hasG
+    ? `print(ggplot(df,aes(sample=v,color=g))+stat_qq(alpha=.6)+stat_qq_line()+scale_color_manual(values=${CATS})+${TH}+labs(title='Normal Q-Q',x='Theoretical',y='Sample')+facet_wrap(~g)+guides(color='none'))`
+    : `print(ggplot(df,aes(sample=v))+stat_qq(alpha=.6)+stat_qq_line(color=${ACC})+${TH}+labs(title='Normal Q-Q',x='Theoretical',y='Sample'))`);
+  if(hasS) lines.push(hasG
+    ? `print(ggplot(df,aes(x=v,y=s,color=g))+geom_point(alpha=.6)+scale_color_manual(values=${CATS})+${TH}+labs(x='${vn}',y='${sn}',color='${gn}',title='Scatterplot'))`
+    : `print(ggplot(df,aes(x=v,y=s))+geom_point(alpha=.6,color=${ACC})+${TH}+labs(x='${vn}',y='${sn}',title='Scatterplot'))`);
   return { code: lines.join("; "), captions: ['Histogram','Boxplot','Normal Q-Q'].concat(hasS?['Scatterplot']:[]) };
+}
+
+const PALETTES = {
+  forest:  { name:'Forest (green) — default', accent:'#0f6b5c', cats:['#0f6b5c','#c98a2b','#3f6d9e','#8a4f7d','#6b8f3a','#b0563a'] },
+  ocean:   { name:'Ocean (blue)',             accent:'#1f6f8b', cats:['#1f6f8b','#3aa6a6','#6b8f3a','#e0a458','#9e4f6d','#4a5e8a'] },
+  sunset:  { name:'Sunset (warm)',            accent:'#c65d3b', cats:['#c65d3b','#e0a458','#9e4f6d','#5b8c85','#d4b483','#7d5a5a'] },
+  viridis: { name:'Viridis',                  accent:'#21918c', cats:['#440154','#3b528b','#21918c','#5ec962','#fde725','#414487'] },
+  okabe:   { name:'Okabe–Ito (colorblind-safe)', accent:'#009E73', cats:['#E69F00','#56B4E9','#009E73','#F0E442','#0072B2','#D55E00','#CC79A7','#000000'] },
+  gray:    { name:'Grayscale',                accent:'#555555', cats:['#222222','#666666','#999999','#bbbbbb','#444444','#888888'] }
+};
+
+let lastEda = null;
+async function drawEDA(env, cols, active){
+  if(!ggReady){ setStatus('Installing the plotting library (one-time download)…',{busy:true}); await webR.installPackages(['ggplot2']); ggReady=true; }
+  setStatus('Drawing plots in R…',{busy:true});
+  const pal = PALETTES[document.getElementById('edaPalette').value] || PALETTES.forest;
+  const {code, captions} = edaPlotCode(active, cols, pal);
+  const shelter = await new webR.Shelter();
+  try{
+    const cap = await shelter.captureR(code, { env, captureGraphics:{ width:820, height:460 } });
+    document.getElementById('edaStats').innerHTML =
+      edaStatsHTML(env.variable, env.group||null, cols.variable, cols.group);
+    const wrap=document.getElementById('edaPlots'); wrap.innerHTML='';
+    (cap.images||[]).forEach((img,i)=>{
+      const card=document.createElement('div'); card.className='plotcard';
+      const c=document.createElement('p'); c.className='cap'; c.textContent=captions[i]||('Plot '+(i+1));
+      const cv=document.createElement('canvas'); cv.width=img.width; cv.height=img.height;
+      cv.getContext('2d').drawImage(img,0,0);
+      card.appendChild(c); card.appendChild(cv); wrap.appendChild(card);
+    });
+    document.getElementById('edaOut').classList.remove('hidden');
+  } finally { await shelter.purge(); }
 }
 
 const TESTS = {
@@ -264,25 +308,9 @@ const TESTS = {
     defaults: {},
     async run({env, cols, active, used, dropped}){
       document.getElementById('outStep').classList.add('hidden');
-      if(!ggReady){ setStatus('Installing the plotting library (one-time download)…',{busy:true}); await webR.installPackages(['ggplot2']); ggReady=true; }
-      setStatus('Drawing plots in R…',{busy:true});
-      const {code, captions} = edaPlotCode(active, cols);
-      const shelter = await new webR.Shelter();
-      try{
-        const cap = await shelter.captureR(code, { env, captureGraphics:{ width:820, height:460 } });
-        document.getElementById('edaStats').innerHTML =
-          edaStatsHTML(env.variable, env.group||null, cols.variable, cols.group);
-        const wrap=document.getElementById('edaPlots'); wrap.innerHTML='';
-        (cap.images||[]).forEach((img,i)=>{
-          const card=document.createElement('div'); card.className='plotcard';
-          const c=document.createElement('p'); c.className='cap'; c.textContent=captions[i]||('Plot '+(i+1));
-          const cv=document.createElement('canvas'); cv.width=img.width; cv.height=img.height;
-          cv.getContext('2d').drawImage(img,0,0);
-          card.appendChild(c); card.appendChild(cv); wrap.appendChild(card);
-        });
-        document.getElementById('edaOut').classList.remove('hidden');
-        setStatus(`Done. ${used} rows used${dropped?`, ${dropped} dropped for missing values`:''}.`);
-      } finally { await shelter.purge(); }
+      lastEda = {env, cols, active};
+      await drawEDA(env, cols, active);
+      setStatus(`Done. ${used} rows used${dropped?`, ${dropped} dropped for missing values`:''}.`);
     }
   },
 
@@ -427,6 +455,19 @@ Object.keys(TESTS).forEach(id=>{
   const o=document.createElement('option'); o.value=id; o.textContent=TESTS[id].label; testSel.appendChild(o);
 });
 
+const edaPaletteEl = document.getElementById('edaPalette');
+Object.entries(PALETTES).forEach(([k,p])=>{ const o=document.createElement('option'); o.value=k; o.textContent=p.name; edaPaletteEl.appendChild(o); });
+edaPaletteEl.value = 'forest';
+function updateEdaControls(){ document.getElementById('edaControls').classList.toggle('hidden', testSel.value!=='eda'); }
+edaPaletteEl.addEventListener('change', async ()=>{
+  if(testSel.value==='eda' && lastEda){
+    runBtn.disabled=true;
+    try{ await drawEDA(lastEda.env, lastEda.cols, lastEda.active); setStatus('Palette updated.'); }
+    catch(e){ setStatus('R error: '+e.message,{err:true}); }
+    finally{ runBtn.disabled=false; }
+  }
+});
+
 testSel.addEventListener('change', ()=>{
   const t = TESTS[testSel.value];
   document.getElementById('outStep').classList.add('hidden');
@@ -434,6 +475,7 @@ testSel.addEventListener('change', ()=>{
   if(!t){ uploadStep.classList.add('hidden'); roleStep.classList.add('hidden'); return; }
   document.getElementById('dropHint').textContent = t.dropHint;
   uploadStep.classList.remove('hidden');
+  updateEdaControls();
   if(headers.length){ renderRoles(); roleStep.classList.remove('hidden'); }
 });
 
@@ -473,6 +515,7 @@ function renderRoles(){
     sel.addEventListener('change', validate);
   });
   runBtn.textContent = t.runLabel || 'Run analysis';
+  updateEdaControls();
   validate();
 }
 
