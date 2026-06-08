@@ -41,9 +41,9 @@
   .roles{display:grid; grid-template-columns:1fr 1fr; gap:16px}
   @media(max-width:640px){.roles{grid-template-columns:1fr}}
   label.fld{display:block; font-size:13px; color:var(--ink-soft); margin-bottom:5px}
-  select{width:100%; padding:9px 10px; font:inherit; font-size:14px; border:1px solid var(--rule);
+  select, input[type=number]{width:100%; padding:9px 10px; font:inherit; font-size:14px; border:1px solid var(--rule);
          border-radius:6px; background:#fff; color:var(--ink)}
-  select:focus{outline:2px solid var(--accent); outline-offset:1px; border-color:var(--accent)}
+  select:focus, input[type=number]:focus{outline:2px solid var(--accent); outline-offset:1px; border-color:var(--accent)}
   .run{margin-top:18px}
   button.run-btn{font:inherit; font-weight:600; font-size:15px; color:#fff; background:var(--accent);
        border:0; border-radius:7px; padding:11px 22px; cursor:pointer; transition:.15s}
@@ -463,6 +463,51 @@ c(stat=stat, df=df, p=p, phat=pst, cil=ci[1], ciu=ci[2],
         }
       });
     }
+  },
+
+  onesample: {
+    label: "One-sample t test (vs a hypothesized value) + Hedges' g",
+    dropHint: "Any dataset: choose one numeric column and type the hypothesized mean to test against.",
+    methodNote: "<b>Why this effect size.</b> Hedges' <i>g</i> applies a small-sample correction to Cohen's <i>d</i>, removing the slight upward bias of <i>d</i>, especially at small <i>n</i> (Lakens, 2013).",
+    roles: [
+      { key:'resp', kind:'numeric', label:'Variable — numeric' }
+    ],
+    params: [
+      { key:'mu0', label:'Hypothesized mean (\u03BC\u2080)', default:0 }
+    ],
+    defaults: {},
+    resultKeys: ['t','df','p','m','s','n','mu0','cil','ciu','g','gl','gu'],
+    rProgram: FIND_NCP + `
+x <- as.numeric(resp)
+n <- length(x); m <- mean(x); s <- sd(x)
+tt <- t.test(x, mu = mu0)
+t.obs <- unname(tt$statistic); df <- n - 1
+lim <- find_ncp_limits(t.obs, df, 0.05)
+dd <- (m - mu0)/s
+mm <- df/2
+if (mm >= 170) { J <- (1 - 3/(4*df - 1)) } else { J <- gamma(mm)/(gamma(mm-0.5)*sqrt(mm)) }
+g <- dd * J
+g.low <- (lim$Lower.Limit / sqrt(n)) * J
+g.up  <- (lim$Upper.Limit  / sqrt(n)) * J
+print(tt)
+cat(sprintf("\\nHedges g = %.3f, 95%% CI [%.3f, %.3f]\\n", g, g.low, g.up))
+c(t=t.obs, df=df, p=tt$p.value, m=m, s=s, n=n, mu0=mu0,
+  cil=tt$conf.int[1], ciu=tt$conf.int[2], g=g, gl=g.low, gu=g.up)`,
+    render(R, ctx){
+      const resp = ctx.cols.resp;
+      const mu = Number.isInteger(R.mu0) ? R.mu0 : f2(R.mu0);
+      return buildAPA({
+        title:`Descriptive Statistics and One-Sample t Test for ${resp} (test value = ${mu})`,
+        headers:[{t:'Variable'},{t:'n',it:true,num:true},{t:'M',it:true,num:true},{t:'SD',it:true,num:true}],
+        rows:[
+          [{t:resp},{t:R.n,num:true},{t:f2(R.m),num:true},{t:f2(R.s),num:true}]
+        ],
+        note:{
+          html:`<i>Note.</i> One-sample <i>t</i>(${f2(R.df)}) = ${f2(R.t)}, <i>p</i> ${pFmt(R.p)}, two-sided, test value = ${mu}. 95% CI for the mean [${f2(R.cil)}, ${f2(R.ciu)}]. Hedges' <i>g</i> = ${nz(R.g)}, 95% CI [${nz(R.gl)}, ${nz(R.gu)}].`,
+          plain:`Note. One-sample t(${f2(R.df)}) = ${f2(R.t)}, p ${pFmt(R.p)}, two-sided, test value = ${mu}. 95% CI for the mean [${f2(R.cil)}, ${f2(R.ciu)}]. Hedges' g = ${nz(R.g)}, 95% CI [${nz(R.gl)}, ${nz(R.gu)}].`
+        }
+      });
+    }
   }
 };
 
@@ -551,19 +596,26 @@ function eligible(kind){
 }
 function renderRoles(){
   const t = TESTS[testSel.value];
-  rolesContainer.innerHTML = t.roles.map(role=>{
+  let html = t.roles.map(role=>{
     const opts = eligible(role.kind);
     let list = opts.map(h=>`<option>${h}</option>`).join('');
     if(role.optional) list = `<option value="">— none —</option>` + list;
     return `<div><label class="fld" for="role_${role.key}">${role.label}</label>
             <select data-role="${role.key}" id="role_${role.key}">${list||'<option value="">(no eligible column)</option>'}</select></div>`;
   }).join('');
-  // sensible defaults
+  if(t.params) html += t.params.map(pp=>
+    `<div><label class="fld" for="param_${pp.key}">${pp.label}</label>
+     <input type="number" step="any" data-param="${pp.key}" id="param_${pp.key}" value="${pp.default}"></div>`).join('');
+  rolesContainer.innerHTML = html;
+  // sensible defaults + listeners
   t.roles.forEach(role=>{
     const sel = rolesContainer.querySelector(`[data-role="${role.key}"]`);
     const def = t.defaults[role.key];
     if(def && [...sel.options].some(o=>o.value===def)) sel.value=def;
     sel.addEventListener('change', validate);
+  });
+  if(t.params) t.params.forEach(pp=>{
+    rolesContainer.querySelector(`[data-param="${pp.key}"]`).addEventListener('input', validate);
   });
   runBtn.textContent = t.runLabel || 'Run analysis';
   updateEdaControls();
@@ -583,6 +635,10 @@ function validate(){
   if(ok && new Set(chosen).size !== chosen.length){ ok=false; msg='Each role needs a different column.'; }
   for(const role of t.roles){
     if(role.kind==='group2' && cols[role.key] && levelsOf(columns[cols[role.key]]).length!==2){ ok=false; msg='The group column must have exactly 2 levels.'; }
+  }
+  if(t.params) for(const pp of t.params){
+    const el = rolesContainer.querySelector(`[data-param="${pp.key}"]`);
+    if(!el || el.value==='' || !Number.isFinite(Number(el.value))){ ok=false; }
   }
   roleWarn.textContent = msg;
   runBtn.disabled = !ok;
@@ -609,6 +665,11 @@ runBtn.addEventListener('click', async ()=>{
       env[role.key].push(role.kind==='numeric' ? Number(v) : String(v).trim()); }
   }
   const used = rawLen - dropped;
+
+  // scalar parameters (e.g. hypothesized mean) become length-1 R values
+  if(t.params) t.params.forEach(pp=>{
+    env[pp.key] = Number(rolesContainer.querySelector(`[data-param="${pp.key}"]`).value);
+  });
 
   // custom-run modules (EDA) manage their own output area
   if(t.run){
