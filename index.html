@@ -777,6 +777,97 @@ c(x1=x1,n1=n1,p1=p1, x2=x2,n2=n2,p2=p2, z=zstat, p=ptst$p.value,
     }
   },
 
+  pairprops: {
+    label: "Pairwise proportion differences (3+ groups, Newcombe)",
+    dropHint: "A 2-level outcome column and a grouping column with 2 or more levels. If pre-aggregated, also pick the counts column.",
+    roles: [
+      { key:'outcome', kind:'group2',    label:'Outcome — categorical, exactly 2 levels' },
+      { key:'grp',     kind:'group_any', label:'Group — 2 to 12 levels' },
+      { key:'counts',  kind:'numeric',   label:'Counts (optional) — frequency per cell, for pre-aggregated data', optional:true }
+    ],
+    params: [
+      { key:'success', type:'level', fromRole:'outcome', default:'last', label:'Success category — the outcome level counted as a success' }
+    ],
+    defaults: {},
+    rProgram: `
+o <- factor(outcome); g <- factor(grp)
+lv <- levels(g); k <- length(lv); m <- k*(k-1)/2
+su <- success
+xs <- numeric(k); ns <- numeric(k)
+for (i in 1:k) {
+  if (exists("counts")) {
+    w <- as.numeric(counts)
+    ns[i] <- sum(w[as.character(g) == lv[i]])
+    xs[i] <- sum(w[as.character(g) == lv[i] & as.character(o) == su])
+  } else {
+    ns[i] <- sum(as.character(g) == lv[i])
+    xs[i] <- sum(as.character(g) == lv[i] & as.character(o) == su)
+  }
+}
+ps <- xs / ns
+alpha <- 1 - conf; alpha_b <- alpha / m
+zb <- qnorm(1 - alpha_b/2)
+wilson <- function(x, n, zc){ ph <- x/n; cen <- (ph + zc^2/(2*n))/(1 + zc^2/n)
+  hw <- (zc/(1 + zc^2/n))*sqrt(ph*(1-ph)/n + zc^2/(4*n^2)); c(cen - hw, cen + hw) }
+cat(sprintf("Pairwise differences between proportions (success = %s)\\n", su))
+cat(sprintf("%d comparisons; Holm-adjusted p-values; %.0f%% Bonferroni-Newcombe simultaneous CIs (per-interval %.4f)\\n\\n", m, conf*100, 1 - alpha_b))
+gi <- c(); gj <- c(); dv <- c(); lo <- c(); hi <- c(); zv <- c(); pr <- c()
+for (i in 1:(k-1)) for (j in (i+1):k) {
+  d <- ps[i] - ps[j]
+  w1 <- wilson(xs[i], ns[i], zb); w2 <- wilson(xs[j], ns[j], zb)
+  dlo <- d - sqrt((ps[i] - w1[1])^2 + (w2[2] - ps[j])^2)
+  dup <- d + sqrt((w1[2] - ps[i])^2 + (ps[j] - w2[1])^2)
+  pt <- prop.test(c(xs[i], xs[j]), c(ns[i], ns[j]), correct = FALSE)
+  z <- sign(d) * sqrt(unname(pt$statistic))
+  gi <- c(gi, lv[i]); gj <- c(gj, lv[j]); dv <- c(dv, d); lo <- c(lo, dlo); hi <- c(hi, dup)
+  zv <- c(zv, z); pr <- c(pr, pt$p.value)
+}
+ph <- p.adjust(pr, method = "holm")
+for (r in 1:m) cat(sprintf("  %s - %s: diff = %.4f, simultaneous CI [%.4f, %.4f], z = %.3f, p(raw) = %.5g, p(Holm) = %.5g\\n",
+  gi[r], gj[r], dv[r], lo[r], hi[r], zv[r], pr[r], ph[r]))
+cat("\\nGroup proportions:\\n")
+for (i in 1:k) cat(sprintf("  %s: x = %d, n = %d, p-hat = %.4f\\n", lv[i], xs[i], ns[i], ps[i]))
+list(lv = lv, xs = xs, ns = ns, ps = ps, k = k, m = m,
+     gi = gi, gj = gj, dv = dv, lo = lo, hi = hi, zv = zv, pr = pr, ph = ph)`,
+    async run({env, cols, active, used, dropped}){
+      document.getElementById('edaOut').classList.add('hidden');
+      setStatus('Running in R…',{busy:true});
+      const shelter = await new webR.Shelter();
+      try{
+        const cap = await shelter.captureR(this.rProgram, { env });
+        const consoleText = cap.output.filter(o=>o.type==='stdout'||o.type==='stderr').map(o=>o.data).join('\n');
+        const R = rlistToObj(await cap.result.toJs());
+        const grp=cols.grp, outcome=cols.outcome, success=env.success, ci=pct(env.conf);
+        const k=R.k[0], m=R.m[0], lv=R.lv;
+        const pcell = p => p < .001 ? '< .001' : nz(p,3);
+        const rows = lv.map((g,i)=>[
+          {t:String(g)},{t:R.xs[i],num:true},{t:R.ns[i],num:true},{t:nz(R.ps[i])}
+        ]);
+        const note = {
+          html:`<i>Note.</i> All pairwise differences in the proportion of ${outcome} = ${success}. ${m} comparisons: Holm-adjusted <i>p</i>-values; ${ci} Bonferroni-Newcombe simultaneous CIs.`,
+          plain:`Note. All pairwise differences in the proportion of ${outcome} = ${success}. ${m} comparisons: Holm-adjusted p-values; ${ci} Bonferroni-Newcombe simultaneous CIs.`
+        };
+        const main = buildAPA({
+          title:`Group Proportions and Pairwise Differences for ${outcome} (success = ${success}) by ${grp}`,
+          headers:[{t:grp},{t:'x',it:true,num:true},{t:'n',it:true,num:true},{t:'p\u0302',num:true}],
+          rows, note
+        });
+        let pt = `<p class="tnum" style="margin-top:18px">Pairwise proportion differences (${ci} simultaneous CIs)</p><table class="apa-tbl"><thead><tr><th>Comparison</th><th class="num">Diff.</th><th class="num">${ci} CI</th><th class="num"><span style="font-style:italic">z</span></th><th class="num"><span style="font-style:italic">p</span> (Holm)</th></tr></thead><tbody>`;
+        for(let r=0;r<m;r++){
+          pt += `<tr><td>${String(R.gi[r])} \u2212 ${String(R.gj[r])}</td><td class="num">${nz(R.dv[r])}</td><td class="num">[${nz(R.lo[r])}, ${nz(R.hi[r])}]</td><td class="num">${f2(R.zv[r])}</td><td class="num">${pcell(R.ph[r])}</td></tr>`;
+        }
+        pt += `</tbody></table>`;
+        document.getElementById('console').textContent = consoleText;
+        document.getElementById('apa').innerHTML = main.screenHtml + pt;
+        lastResult = { plain: main.plain, htmlTable: main.copyHtml };
+        document.getElementById('outStep').classList.remove('hidden');
+        const methodNote = `<b>Why these methods.</b> Each pairwise difference uses the Newcombe hybrid-score interval, which keeps good coverage at any <i>n</i>, here computed at the Bonferroni-adjusted per-interval level so all ${m} intervals hold jointly at ${pct(env.conf)} (Newcombe, 1998). Testing uses Holm-adjusted <i>p</i>-values, which control the familywise error rate and are uniformly more powerful than Bonferroni (Holm, 1979). Because Holm does not invert cleanly to two-sided simultaneous intervals, the tests and the intervals use different adjustments \u2014 so a comparison can be Holm-significant while its simultaneous CI grazes the null. That is not a contradiction; it is the price of honest joint coverage.`;
+        const mn=document.getElementById('methodNote'); mn.innerHTML=methodNote; mn.classList.remove('hidden');
+        setStatus(`Done. ${used} rows used${dropped?`, ${dropped} dropped for missing values`:''}.`);
+      } finally { await shelter.purge(); }
+    }
+  },
+
   linreg: {
     label: "Simple linear regression (+ Pearson r, plots)",
     dropHint: "Two numeric columns: a response (Y) and a single predictor (X).",
