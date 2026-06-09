@@ -144,6 +144,7 @@
         <div class="apa" id="apa"></div>
       </div>
     </div>
+    <div class="edaplots hidden" id="testPlots"></div>
     <div class="methodnote hidden" id="methodNote"></div>
     <div class="hint">The two panels show the same analysis: R's native console output on the left, a clean APA table on the right (to read and paste). You write the interpretation.</div>
   </div>
@@ -699,7 +700,7 @@ c(x=x, n=n, phat=phat, z=zstat, p=ptst$p.value, cil=ptst$conf.int[1], ciu=ptst$c
   twoprop: {
     label: "Two-sample proportions (Newcombe CI + Cohen's h, RR, OR)",
     dropHint: "A 2-level outcome column and a 2-level grouping column. If pre-aggregated, also pick the counts column.",
-    methodNote: "<b>Effect sizes and intervals.</b> The difference in proportions uses the Newcombe hybrid-score interval (Method 10), which keeps good coverage at any <i>n</i>, unlike the Wald interval (Newcombe, 1998). Cohen's <i>h</i> is the arcsine difference 2\u00B7arcsin\u221A<i>p&#770;</i>\u2081 \u2212 2\u00B7arcsin\u221A<i>p&#770;</i>\u2082. The risk ratio and odds ratio use Wald log intervals (the method <i>epitools</i> and jamovi report by default). If any 2\u00D72 cell count is zero, a Haldane\u2013Anscombe correction (+0.5 to each cell) is applied to RR and OR so they stay defined (Haldane, 1956; Anscombe, 1956). All proportion effect sizes stay at the full confidence level.",
+    methodNote: "<b>Effect sizes and intervals.</b> The difference in proportions uses the Newcombe hybrid-score interval (Method 10), which keeps good coverage at any <i>n</i>, unlike the Wald interval (Newcombe, 1998). Cohen's <i>h</i> is the arcsine difference 2\u00B7arcsin\u221A<i>p&#770;</i>\u2081 \u2212 2\u00B7arcsin\u221A<i>p&#770;</i>\u2082. The risk ratio and odds ratio use Wald log intervals (the standard log-transform method, e.g. <i>epitools</i>' <code>method='wald'</code>). If any 2\u00D72 cell count is zero, a Haldane\u2013Anscombe correction (+0.5 to each cell) is applied to RR and OR so they stay defined (Haldane, 1956; Anscombe, 1956). All proportion effect sizes stay at the full confidence level.",
     roles: [
       { key:'outcome', kind:'group2', label:'Outcome — categorical, exactly 2 levels' },
       { key:'group',   kind:'group2', label:'Group — categorical, exactly 2 levels' },
@@ -769,6 +770,84 @@ c(x1=x1,n1=n1,p1=p1, x2=x2,n2=n2,p2=p2, z=zstat, p=ptst$p.value,
         }
       });
     }
+  },
+
+  linreg: {
+    label: "Simple linear regression (+ Pearson r, plots)",
+    dropHint: "Two numeric columns: a response (Y) and a single predictor (X).",
+    methodNote: "<b>Interval methods.</b> Coefficient intervals use the <i>t</i> distribution; the Pearson correlation interval uses the Fisher <i>z</i> transformation (cor.test). The plot's inner (darker) band is the confidence band for the mean response; the outer (lighter) band is the prediction band for a single new observation. <i>R</i>\u00B2 is the proportion of variance in the response explained by the predictor; adjusted <i>R</i>\u00B2 penalizes for model complexity.",
+    roles: [
+      { key:'response',  kind:'numeric', label:'Response (Y) — numeric outcome' },
+      { key:'predictor', kind:'numeric', label:'Predictor (X) — numeric' }
+    ],
+    params: [
+      { key:'x0', type:'number', optional:true, default:'', label:'Predict at X = (optional) — leave blank to skip the prediction' }
+    ],
+    packages: ['ggplot2'],
+    plotCaptions: ['Regression with confidence and prediction bands', 'Residuals vs fitted'],
+    defaults: { response:'bmd', predictor:'age' },
+    resultKeys: ['b0','b0se','b0t','b0p','b0l','b0u','b1','b1se','b1t','b1p','b1l','b1u','f','df1','df2','fp','r2','adjr2','r','rl','ru','n','px','pcl','pcu','ppl','ppu'],
+    rProgram: `
+y <- as.numeric(response); x <- as.numeric(predictor)
+fit <- lm(y ~ x); s <- summary(fit); co <- s$coefficients
+ci <- confint(fit, level = conf)
+fstat <- unname(s$fstatistic[1]); df1 <- unname(s$fstatistic[2]); df2 <- unname(s$fstatistic[3])
+ct <- cor.test(x, y, conf.level = conf)
+print(s)
+cat(sprintf("\\n%.0f%% CI for coefficients:\\n", conf*100)); print(ci)
+cat(sprintf("\\nPearson r = %.4f, %.0f%% CI [%.4f, %.4f] (Fisher z)\\n", unname(ct$estimate), conf*100, ct$conf.int[1], ct$conf.int[2]))
+if (is.finite(x0)) {
+  nd <- data.frame(x = x0)
+  pcf <- predict(fit, nd, interval = "confidence", level = conf)
+  ppf <- predict(fit, nd, interval = "prediction", level = conf)
+  px <- pcf[1,1]; pcl <- pcf[1,2]; pcu <- pcf[1,3]; ppl <- ppf[1,2]; ppu <- ppf[1,3]
+  cat(sprintf("\\nPrediction at X = %g:\\n  fitted mean = %.4f\\n  %.0f%% confidence interval (mean response) [%.4f, %.4f]\\n  %.0f%% prediction interval (new observation) [%.4f, %.4f]\\n",
+              x0, px, conf*100, pcl, pcu, conf*100, ppl, ppu))
+} else { px <- NaN; pcl <- NaN; pcu <- NaN; ppl <- NaN; ppu <- NaN }
+suppressMessages(library(ggplot2))
+gr <- data.frame(x = seq(min(x), max(x), length.out = 200))
+pcb <- predict(fit, gr, interval = "confidence", level = conf)
+ppb <- predict(fit, gr, interval = "prediction", level = conf)
+gr$fit <- pcb[,1]; gr$cl <- pcb[,2]; gr$cu <- pcb[,3]; gr$pl <- ppb[,2]; gr$pu <- ppb[,3]
+ACC <- '#0f6b5c'
+print(ggplot() +
+  geom_ribbon(data = gr, aes(x, ymin = pl, ymax = pu), fill = ACC, alpha = .10) +
+  geom_ribbon(data = gr, aes(x, ymin = cl, ymax = cu), fill = ACC, alpha = .25) +
+  geom_line(data = gr, aes(x, fit), color = ACC, linewidth = 1) +
+  geom_point(data = data.frame(x = x, y = y), aes(x, y), alpha = .5, color = ACC) +
+  theme_minimal(base_size = 13) + labs(x = predictor_name, y = response_name, title = "Regression line with confidence and prediction bands"))
+rf <- data.frame(fitted = fitted(fit), resid = resid(fit))
+print(ggplot(rf, aes(fitted, resid)) + geom_point(alpha = .5, color = ACC) +
+  geom_hline(yintercept = 0, linetype = 2) + theme_minimal(base_size = 13) +
+  labs(x = "Fitted value", y = "Residual", title = "Residuals vs fitted"))
+c(b0=co[1,1], b0se=co[1,2], b0t=co[1,3], b0p=co[1,4], b0l=ci[1,1], b0u=ci[1,2],
+  b1=co[2,1], b1se=co[2,2], b1t=co[2,3], b1p=co[2,4], b1l=ci[2,1], b1u=ci[2,2],
+  f=fstat, df1=df1, df2=df2, fp=pf(fstat, df1, df2, lower.tail=FALSE),
+  r2=s$r.squared, adjr2=s$adj.r.squared,
+  r=unname(ct$estimate), rl=ct$conf.int[1], ru=ct$conf.int[2], n=length(y),
+  px=px, pcl=pcl, pcu=pcu, ppl=ppl, ppu=ppu)`,
+    render(R, ctx){
+      const resp=ctx.cols.response, pred=ctx.cols.predictor, ci=pct(ctx.conf);
+      const pc = p => p < .001 ? '< .001' : nz(p,3);
+      const x0 = ctx.env.x0;
+      let predH='', predP='';
+      if(Number.isFinite(R.px)){
+        predH = ` Predicted at ${pred} = ${x0}: fitted ${resp} = ${f2(R.px)}, ${ci} confidence interval for the mean [${f2(R.pcl)}, ${f2(R.pcu)}], ${ci} prediction interval for a new observation [${f2(R.ppl)}, ${f2(R.ppu)}].`;
+        predP = ` Predicted at ${pred} = ${x0}: fitted ${resp} = ${f2(R.px)}, ${ci} confidence interval for the mean [${f2(R.pcl)}, ${f2(R.pcu)}], ${ci} prediction interval for a new observation [${f2(R.ppl)}, ${f2(R.ppu)}].`;
+      }
+      return buildAPA({
+        title:`Simple Linear Regression: ${resp} predicted from ${pred}`,
+        headers:[{t:'Term'},{t:'B',it:true,num:true},{t:'SE',it:true,num:true},{t:'t',it:true,num:true},{t:'p',it:true,num:true},{t:`${ci} CI`,num:true}],
+        rows:[
+          [{t:'(Intercept)'},{t:f2(R.b0),num:true},{t:f2(R.b0se),num:true},{t:f2(R.b0t),num:true},{t:pc(R.b0p),num:true},{t:`[${f2(R.b0l)}, ${f2(R.b0u)}]`,num:true}],
+          [{t:pred},{t:f2(R.b1),num:true},{t:f2(R.b1se),num:true},{t:f2(R.b1t),num:true},{t:pc(R.b1p),num:true},{t:`[${f2(R.b1l)}, ${f2(R.b1u)}]`,num:true}]
+        ],
+        note:{
+          html:`<i>Note.</i> Overall model: <i>F</i>(${R.df1}, ${R.df2}) = ${f2(R.f)}, <i>p</i> ${pFmt(R.fp)}. <i>R</i><sup>2</sup> = ${nz(R.r2)}, adjusted <i>R</i><sup>2</sup> = ${nz(R.adjr2)}. Pearson <i>r</i> = ${nz(R.r)}, ${ci} CI [${nz(R.rl)}, ${nz(R.ru)}] (Fisher <i>z</i>). <i>n</i> = ${R.n}.${predH}`,
+          plain:`Note. Overall model: F(${R.df1}, ${R.df2}) = ${f2(R.f)}, p ${pFmt(R.fp)}. R^2 = ${nz(R.r2)}, adjusted R^2 = ${nz(R.adjr2)}. Pearson r = ${nz(R.r)}, ${ci} CI [${nz(R.rl)}, ${nz(R.ru)}] (Fisher z). n = ${R.n}.${predP}`
+        }
+      });
+    }
   }
 };
 
@@ -830,6 +909,7 @@ testSel.addEventListener('change', ()=>{
   const t = TESTS[testSel.value];
   document.getElementById('outStep').classList.add('hidden');
   document.getElementById('edaOut').classList.add('hidden');
+  document.getElementById('testPlots').classList.add('hidden');
   if(!t){ uploadStep.classList.add('hidden'); roleStep.classList.add('hidden'); return; }
   document.getElementById('dropHint').textContent = t.dropHint;
   uploadStep.classList.remove('hidden');
@@ -946,6 +1026,7 @@ function validate(){
   if(t.params) for(const pp of t.params){
     if((pp.type||'number')!=='number') continue;
     const el = rolesContainer.querySelector(`[data-param="${pp.key}"]`);
+    if(pp.optional && el && el.value==='') continue;
     if(!el || el.value==='' || !Number.isFinite(Number(el.value))){ ok=false; }
   }
   roleWarn.textContent = msg;
@@ -977,8 +1058,10 @@ runBtn.addEventListener('click', async ()=>{
   // scalar parameters (e.g. hypothesized mean) become length-1 R values
   if(t.params) t.params.forEach(pp=>{
     const val = rolesContainer.querySelector(`[data-param="${pp.key}"]`).value;
-    env[pp.key] = (pp.type==='text'||pp.type==='level') ? String(val) : Number(val);
+    env[pp.key] = (pp.type==='text'||pp.type==='level') ? String(val)
+                : (pp.optional && val==='') ? NaN : Number(val);
   });
+  active.forEach(r=>{ env[r.key+'_name'] = cols[r.key]; });   // column names for R-side labels
   env.conf = currentConf();   // confidence level available to every module's R
 
   // custom-run modules (EDA) manage their own output area
@@ -998,7 +1081,7 @@ runBtn.addEventListener('click', async ()=>{
   }
   const shelter = await new webR.Shelter();
   try{
-    const cap = await shelter.captureR(t.rProgram, { env });
+    const cap = await shelter.captureR(t.rProgram, { env, captureGraphics:{ width:820, height:460 } });
     const consoleText = cap.output.filter(o=>o.type==='stdout'||o.type==='stderr').map(o=>o.data).join('\n');
     const vals = await cap.result.toArray();
     const R={}; t.resultKeys.forEach((k,i)=>R[k]=vals[i]);
@@ -1010,6 +1093,20 @@ runBtn.addEventListener('click', async ()=>{
     document.getElementById('console').textContent = consoleText;
     document.getElementById('apa').innerHTML = out.screenHtml;
     lastResult = { plain: out.plain, htmlTable: out.copyHtml };
+    // any plots the module drew
+    const plotsWrap = document.getElementById('testPlots'); plotsWrap.innerHTML='';
+    const imgs = cap.images || [];
+    if(imgs.length){
+      const caps = t.plotCaptions || [];
+      imgs.forEach((img,i)=>{
+        const card=document.createElement('div'); card.className='plotcard';
+        const c=document.createElement('p'); c.className='cap'; c.textContent=caps[i]||('Plot '+(i+1));
+        const cv=document.createElement('canvas'); cv.width=img.width; cv.height=img.height;
+        cv.getContext('2d').drawImage(img,0,0);
+        card.appendChild(c); card.appendChild(cv); plotsWrap.appendChild(card);
+      });
+      plotsWrap.classList.remove('hidden');
+    } else { plotsWrap.classList.add('hidden'); }
     document.getElementById('outStep').classList.remove('hidden');
     const mn=document.getElementById('methodNote');
     if(t.methodNote){ mn.innerHTML=t.methodNote; mn.classList.remove('hidden'); } else { mn.classList.add('hidden'); }
