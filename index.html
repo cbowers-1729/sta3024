@@ -1006,6 +1006,95 @@ list(term = rownames(co), est = co[,1], se = co[,2], tval = co[,3], pval = co[,4
         setStatus(`Done. ${used} rows used${dropped?`, ${dropped} dropped for missing values`:''}.`);
       } finally { await shelter.purge(); }
     }
+  },
+
+  welch_anova: {
+    label: "One-way Welch ANOVA (+ Games-Howell, adjusted ω²)",
+    dropHint: "Long/tidy data: a numeric outcome column and a grouping column with 3 or more levels.",
+    roles: [
+      { key:'resp', kind:'numeric',     label:'Response — numeric outcome' },
+      { key:'grp',  kind:'group_anova', label:'Group — 3 to 12 levels' }
+    ],
+    defaults: { resp:'weight', grp:'feed' },
+    rProgram: `
+suppressMessages(library(WAnova))
+d <- data.frame(y = as.numeric(resp), g = factor(grp))
+lv <- levels(d$g); k <- length(lv)
+ns <- as.numeric(tapply(d$y, d$g, length))
+ms <- as.numeric(tapply(d$y, d$g, mean))
+ss <- as.numeric(tapply(d$y, d$g, sd))
+fit <- welch_anova.test(lv, ns, ms, ss, effsize = "AnL")
+summary(fit)
+Fv <- fit$f_value; df1 <- fit$df_between; df2 <- fit$df_within; pv <- fit$p_value; om <- fit$omega_sq
+# analytic noncentral-F CI for adjusted omega-squared on Welch df, at the scaled 2C-1 level
+alpha_s <- 2*(1 - conf)
+p0 <- pf(Fv, df1, df2)
+big <- max(100, df1*Fv*10); while (pf(Fv, df1, df2, big) > alpha_s/2 && big < 1e8) big <- big*2
+lam_lo <- if (p0 <= 1 - alpha_s/2) 0 else uniroot(function(l) pf(Fv, df1, df2, l) - (1 - alpha_s/2), c(0, big))$root
+lam_hi <- if (p0 <= alpha_s/2)     0 else uniroot(function(l) pf(Fv, df1, df2, l) - alpha_s/2,       c(0, big))$root
+om_lo <- lam_lo/(lam_lo + df1 + df2 + 1)
+om_hi <- lam_hi/(lam_hi + df1 + df2 + 1)
+cat(sprintf("Adjusted omega-squared (AnL) = %.4f, %.0f%% CI [%.4f, %.4f]\\n", om, (2*conf-1)*100, om_lo, om_hi))
+cat("(analytic noncentral-F interval on Welch df; scaled level 2C-1)\\n\\n")
+# Games-Howell pairwise comparisons, run unconditionally
+cat(sprintf("Games-Howell pairwise comparisons (%.0f%% CIs):\\n", conf*100))
+gi <- c(); gj <- c(); gd <- c(); glo <- c(); ghi <- c(); gt <- c(); gdf <- c(); gp <- c()
+for (i in 1:(k-1)) for (j in (i+1):k) {
+  se <- sqrt(ss[i]^2/ns[i] + ss[j]^2/ns[j])
+  dfij <- (ss[i]^2/ns[i] + ss[j]^2/ns[j])^2 / ((ss[i]^2/ns[i])^2/(ns[i]-1) + (ss[j]^2/ns[j])^2/(ns[j]-1))
+  dd <- ms[i] - ms[j]
+  tt <- dd/se
+  pp <- ptukey(abs(tt)*sqrt(2), k, dfij, lower.tail = FALSE)
+  hw <- qtukey(conf, k, dfij)/sqrt(2)*se
+  cat(sprintf("  %s - %s: diff = %.4f, CI [%.4f, %.4f], t = %.3f, df = %.2f, p = %.5g\\n",
+      lv[i], lv[j], dd, dd-hw, dd+hw, tt, dfij, pp))
+  gi <- c(gi, lv[i]); gj <- c(gj, lv[j]); gd <- c(gd, dd); glo <- c(glo, dd-hw); ghi <- c(ghi, dd+hw)
+  gt <- c(gt, tt); gdf <- c(gdf, dfij); gp <- c(gp, pp)
+}
+list(lv = lv, ns = ns, ms = ms, ss = ss, k = k,
+     f = Fv, df1 = df1, df2 = df2, p = pv, om = om, oml = om_lo, omu = om_hi,
+     gi = gi, gj = gj, gd = gd, glo = glo, ghi = ghi, gt = gt, gdf = gdf, gp = gp)`,
+    async run({env, cols, active, used, dropped}){
+      document.getElementById('edaOut').classList.add('hidden');
+      if(!installed.has('WAnova')){ setStatus('Installing WAnova (one-time download)…',{busy:true}); await webR.installPackages(['WAnova']); installed.add('WAnova'); }
+      setStatus('Running in R…',{busy:true});
+      const shelter = await new webR.Shelter();
+      try{
+        const cap = await shelter.captureR(this.rProgram, { env });
+        const consoleText = cap.output.filter(o=>o.type==='stdout'||o.type==='stderr').map(o=>o.data).join('\n');
+        const R = rlistToObj(await cap.result.toJs());
+        const grp=cols.grp, resp=cols.resp, ci=pct(env.conf);
+        const ciPct = Math.round((2*env.conf - 1)*100), confPct = Math.round(env.conf*100);
+        const k=R.k[0], lv=R.lv;
+        const pcell = p => p < .001 ? '< .001' : nz(p,3);
+        // descriptives + omnibus
+        const rows = lv.map((g,i)=>[
+          {t:String(g)},{t:R.ns[i],num:true},{t:f2(R.ms[i]),num:true},{t:f2(R.ss[i]),num:true}
+        ]);
+        const note = {
+          html:`<i>Note.</i> Welch's <i>F</i>(${R.df1[0]}, ${f2(R.df2[0])}) = ${f2(R.f[0])}, <i>p</i> ${pFmt(R.p[0])}. Adjusted \u03C9\u00B2 = ${nz(R.om[0])}, ${ciPct}% CI [${nz(R.oml[0])}, ${nz(R.omu[0])}].`,
+          plain:`Note. Welch's F(${R.df1[0]}, ${f2(R.df2[0])}) = ${f2(R.f[0])}, p ${pFmt(R.p[0])}. Adjusted omega-squared = ${nz(R.om[0])}, ${ciPct}% CI [${nz(R.oml[0])}, ${nz(R.omu[0])}].`
+        };
+        const main = buildAPA({
+          title:`Descriptive Statistics and Welch's ANOVA for ${resp} by ${grp}`,
+          headers:[{t:grp},{t:'n',it:true,num:true},{t:'M',it:true,num:true},{t:'SD',it:true,num:true}],
+          rows, note
+        });
+        // Games-Howell table
+        let gh = `<p class="tnum" style="margin-top:18px">Games-Howell pairwise comparisons (${ci} CIs)</p><table class="apa-tbl"><thead><tr><th>Comparison</th><th class="num"><span style="font-style:italic">M</span> diff.</th><th class="num">${ci} CI</th><th class="num"><span style="font-style:italic">t</span></th><th class="num"><span style="font-style:italic">df</span></th><th class="num"><span style="font-style:italic">p</span></th></tr></thead><tbody>`;
+        for(let r=0;r<R.gd.length;r++){
+          gh += `<tr><td>${String(R.gi[r])} \u2212 ${String(R.gj[r])}</td><td class="num">${f2(R.gd[r])}</td><td class="num">[${f2(R.glo[r])}, ${f2(R.ghi[r])}]</td><td class="num">${f2(R.gt[r])}</td><td class="num">${f2(R.gdf[r])}</td><td class="num">${pcell(R.gp[r])}</td></tr>`;
+        }
+        gh += `</tbody></table>`;
+        document.getElementById('console').textContent = consoleText;
+        document.getElementById('apa').innerHTML = main.screenHtml + gh;
+        lastResult = { plain: main.plain, htmlTable: main.copyHtml };
+        document.getElementById('outStep').classList.remove('hidden');
+        const methodNote = `<b>Why these methods.</b> Welch's <i>F</i> is the default because the classical <i>F</i> is not robust to unequal variances and pretesting them does not help (Delacre, Leys, Mora &amp; Lakens, 2019). Games-Howell is the matching post hoc under unequal variances and <i>n</i>'s (Games &amp; Howell, 1976; Sauder &amp; DeMars, 2019), and it runs unconditionally \u2014 it controls the familywise error rate on its own, so it needs no significant omnibus <i>F</i> first (Bernhardson, 1975; Hayter, 1986). Adjusted \u03C9\u00B2 (Albers &amp; Lakens, 2018) incorporates Welch's corrected df. You selected ${confPct}%, but the \u03C9\u00B2 interval is shown as a ${ciPct}% CI: because the <i>F</i> test is one-sided, a ${ciPct}% two-sided interval corresponds to the ${confPct}% test (Steiger, 2004; Lakens, 2013). The \u03C9\u00B2 interval inverts a noncentral <i>F</i> on Welch df \u2014 exact under equal variances, an accepted approximation otherwise.`;
+        const mn=document.getElementById('methodNote'); mn.innerHTML=methodNote; mn.classList.remove('hidden');
+        setStatus(`Done. ${used} rows used${dropped?`, ${dropped} dropped for missing values`:''}.`);
+      } finally { await shelter.purge(); }
+    }
   }
 };
 
@@ -1092,6 +1181,7 @@ function eligible(kind){
   if(kind==='numeric') return headers.filter(h=>isNumericCol(columns[h]));
   if(kind==='group2')  return headers.filter(h=>levelsOf(columns[h]).length===2);
   if(kind==='group_any') return headers.filter(h=>{const k=levelsOf(columns[h]).length; return k>=2 && k<=12;});
+  if(kind==='group_anova') return headers.filter(h=>{const k=levelsOf(columns[h]).length; return k>=3 && k<=12;});
   if(kind==='categorical') return headers.filter(h=>{const k=levelsOf(columns[h]).length; return k>=2 && k<=30;});
   if(kind==='predictor') return headers.filter(h=> isNumericCol(columns[h]) || (levelsOf(columns[h]).length>=2 && levelsOf(columns[h]).length<=30));
   return headers.slice();
