@@ -580,7 +580,9 @@ list(chi2 = unname(ct$statistic), df = unname(ct$parameter), p = ct$p.value,
         document.getElementById('apa').innerHTML = main.screenHtml + resid;
         lastResult = { plain: main.plain, htmlTable: main.copyHtml };
         document.getElementById('outStep').classList.remove('hidden');
-        const mn=document.getElementById('methodNote'); mn.innerHTML=this.methodNote; mn.classList.remove('hidden');
+        const confPct = Math.round(env.conf*100);
+        const methodNote = `<b>Cram\u00E9r's <i>V</i> and its interval.</b> Cram\u00E9r's <i>V</i> uses the bias-corrected (Bergsma) adjustment. You selected a ${confPct}% confidence level, but it is shown as a ${ciPct}% CI: because the \u03C7\u00B2 test is one-sided, a ${ciPct}% two-sided interval corresponds to the ${confPct}% test (Steiger, 2004; Lakens, 2013). Standardized residuals with |z| greater than about 2 flag the cells driving the association.`;
+        const mn=document.getElementById('methodNote'); mn.innerHTML=methodNote; mn.classList.remove('hidden');
         setStatus(`Done. ${used} rows used${dropped?`, ${dropped} dropped for missing values`:''}.`);
       } finally { await shelter.purge(); }
     }
@@ -597,6 +599,7 @@ list(chi2 = unname(ct$statistic), df = unname(ct$parameter), p = ct$p.value,
     params: [
       { key:'propstr', type:'text', label:'Expected proportions (optional) — comma-separated, in category order shown below; blank = equal', default:'' }
     ],
+    levelsPreview: 'variable',
     defaults: { variable:'Age', counts:'Count' },
     rProgram: `
 library(effectsize)
@@ -641,7 +644,9 @@ list(chi2 = unname(ct$statistic), df = unname(ct$parameter), p = ct$p.value, N =
         document.getElementById('apa').innerHTML = out.screenHtml;
         lastResult = { plain: out.plain, htmlTable: out.copyHtml };
         document.getElementById('outStep').classList.remove('hidden');
-        const mn=document.getElementById('methodNote'); mn.innerHTML=this.methodNote; mn.classList.remove('hidden');
+        const confPct = Math.round(env.conf*100);
+        const methodNote = `<b>Cohen's <i>w</i> and its interval.</b> Cohen's <i>w</i> summarizes how far the observed counts depart from the expected. You selected a ${confPct}% confidence level, but the effect-size interval is shown as a ${ciPct}% CI: because the \u03C7\u00B2 test is one-sided, a ${ciPct}% two-sided interval corresponds to the ${confPct}% test (Steiger, 2004; Lakens, 2013).`;
+        const mn=document.getElementById('methodNote'); mn.innerHTML=methodNote; mn.classList.remove('hidden');
         setStatus(`Done. ${used} rows used${dropped?`, ${dropped} dropped for missing values`:''}.`);
       } finally { await shelter.purge(); }
     }
@@ -748,6 +753,7 @@ function renderRoles(){
     return `<div><label class="fld" for="param_${pp.key}">${pp.label}</label>
      <input type="${ty}"${step} data-param="${pp.key}" id="param_${pp.key}" value="${pp.default}"></div>`;
   }).join('');
+  if(t.levelsPreview) html += `<div id="levelHint" class="hint" style="grid-column:1/-1; margin-top:2px"></div>`;
   rolesContainer.innerHTML = html;
   // sensible defaults + listeners
   t.roles.forEach(role=>{
@@ -755,13 +761,27 @@ function renderRoles(){
     const def = t.defaults[role.key];
     if(def && [...sel.options].some(o=>o.value===def)) sel.value=def;
     sel.addEventListener('change', validate);
+    if(t.levelsPreview) sel.addEventListener('change', updateLevelHint);
   });
   if(t.params) t.params.forEach(pp=>{
     rolesContainer.querySelector(`[data-param="${pp.key}"]`).addEventListener('input', validate);
   });
   runBtn.textContent = t.runLabel || 'Run analysis';
   updateEdaControls();
+  updateLevelHint();
   validate();
+}
+
+function updateLevelHint(){
+  const el = document.getElementById('levelHint');
+  if(!el) return;
+  const t = TESTS[testSel.value];
+  const sel = rolesContainer.querySelector(`[data-role="${t.levelsPreview}"]`);
+  const colName = sel ? sel.value : '';
+  if(colName && columns[colName]){
+    const lv = levelsOf(columns[colName]).slice().sort();
+    el.textContent = `Categories in order: ${lv.join(', ')}`;
+  } else { el.textContent=''; }
 }
 
 function currentCols(){
