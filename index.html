@@ -784,7 +784,7 @@ c(x1=x1,n1=n1,p1=p1, x2=x2,n2=n2,p2=p2, z=zstat, p=ptst$p.value,
       { key:'x0', type:'number', optional:true, default:'', label:'Predict at X = (optional) — leave blank to skip the prediction' }
     ],
     packages: ['ggplot2'],
-    plotCaptions: ['Regression with confidence and prediction bands', 'Residuals vs fitted'],
+    plotCaptions: ['Regression with confidence and prediction bands', 'Residuals vs fitted (right axis: standardized)'],
     defaults: { response:'bmd', predictor:'age' },
     resultKeys: ['b0','b0se','b0t','b0p','b0l','b0u','b1','b1se','b1t','b1p','b1l','b1u','f','df1','df2','fp','r2','adjr2','r','rl','ru','n','px','pcl','pcu','ppl','ppu'],
     rProgram: `
@@ -816,10 +816,15 @@ print(ggplot() +
   geom_line(data = gr, aes(x, fit), color = ACC, linewidth = 1) +
   geom_point(data = data.frame(x = x, y = y), aes(x, y), alpha = .5, color = ACC) +
   theme_minimal(base_size = 13) + labs(x = predictor_name, y = response_name, title = "Regression line with confidence and prediction bands"))
-rf <- data.frame(fitted = fitted(fit), resid = resid(fit))
-print(ggplot(rf, aes(fitted, resid)) + geom_point(alpha = .5, color = ACC) +
-  geom_hline(yintercept = 0, linetype = 2) + theme_minimal(base_size = 13) +
-  labs(x = "Fitted value", y = "Residual", title = "Residuals vs fitted"))
+rf <- data.frame(fitted = fitted(fit), resid = resid(fit)); sig <- s$sigma
+print(ggplot(rf, aes(fitted, resid)) +
+  geom_hline(yintercept = 0, linetype = 2) +
+  geom_hline(yintercept = c(-2, 2)*sig, linetype = 3, colour = "grey55") +
+  geom_hline(yintercept = c(-3, 3)*sig, linetype = 3, colour = "grey78") +
+  geom_point(alpha = .5, color = ACC) +
+  scale_y_continuous(sec.axis = sec_axis(~ . / sig, name = "Standardized residual (residual / s)", breaks = -3:3)) +
+  theme_minimal(base_size = 13) +
+  labs(x = "Fitted value", y = "Residual", title = "Residuals vs fitted (right axis: standardized)"))
 c(b0=co[1,1], b0se=co[1,2], b0t=co[1,3], b0p=co[1,4], b0l=ci[1,1], b0u=ci[1,2],
   b1=co[2,1], b1se=co[2,2], b1t=co[2,3], b1p=co[2,4], b1l=ci[2,1], b1u=ci[2,2],
   f=fstat, df1=df1, df2=df2, fp=pf(fstat, df1, df2, lower.tail=FALSE),
@@ -847,6 +852,71 @@ c(b0=co[1,1], b0se=co[1,2], b0t=co[1,3], b0p=co[1,4], b0l=ci[1,1], b0u=ci[1,2],
           plain:`Note. Overall model: F(${R.df1}, ${R.df2}) = ${f2(R.f)}, p ${pFmt(R.fp)}. R^2 = ${nz(R.r2)}, adjusted R^2 = ${nz(R.adjr2)}. Pearson r = ${nz(R.r)}, ${ci} CI [${nz(R.rl)}, ${nz(R.ru)}] (Fisher z). n = ${R.n}.${predP}`
         }
       });
+    }
+  },
+
+  multreg: {
+    label: "Multiple linear regression",
+    dropHint: "A numeric response and one to four predictors (numeric or categorical). Categorical predictors are dummy-coded automatically.",
+    methodNote: "<b>Multiple regression.</b> Each coefficient is the estimated change in the response per one-unit increase in that predictor, holding the others fixed; for a categorical predictor each row is a level compared with its reference level (dummy coding). Coefficient intervals use the <i>t</i> distribution. Adjusted <i>R</i>\u00B2 penalizes for the number of predictors, so it is the fairer fit measure when comparing models.",
+    roles: [
+      { key:'response',   kind:'numeric',   label:'Response (Y) — numeric outcome' },
+      { key:'predictor1', kind:'predictor', label:'Predictor 1 — numeric or categorical' },
+      { key:'predictor2', kind:'predictor', label:'Predictor 2 (optional)', optional:true },
+      { key:'predictor3', kind:'predictor', label:'Predictor 3 (optional)', optional:true },
+      { key:'predictor4', kind:'predictor', label:'Predictor 4 (optional)', optional:true }
+    ],
+    defaults: {},
+    rProgram: `
+df <- data.frame(.y = as.numeric(response), check.names = FALSE)
+addp <- function(v, nm, ty){ df[[nm]] <<- if (ty == "num") as.numeric(v) else factor(v) }
+if (exists("predictor1")) addp(predictor1, predictor1_name, predictor1_ty)
+if (exists("predictor2")) addp(predictor2, predictor2_name, predictor2_ty)
+if (exists("predictor3")) addp(predictor3, predictor3_name, predictor3_ty)
+if (exists("predictor4")) addp(predictor4, predictor4_name, predictor4_ty)
+fit <- lm(.y ~ ., data = df)
+s <- summary(fit); co <- s$coefficients; ci <- confint(fit, level = conf)
+fstat <- unname(s$fstatistic[1]); df1 <- unname(s$fstatistic[2]); df2 <- unname(s$fstatistic[3])
+print(s)
+cat(sprintf("\\n%.0f%% CI for coefficients:\\n", conf*100)); print(ci)
+list(term = rownames(co), est = co[,1], se = co[,2], tval = co[,3], pval = co[,4],
+     lo = ci[,1], hi = ci[,2], f = fstat, df1 = df1, df2 = df2,
+     fp = pf(fstat, df1, df2, lower.tail = FALSE),
+     r2 = s$r.squared, adjr2 = s$adj.r.squared, n = nrow(df))`,
+    async run({env, cols, active, used, dropped}){
+      document.getElementById('edaOut').classList.add('hidden');
+      ['predictor1','predictor2','predictor3','predictor4'].forEach(k=>{
+        if(cols[k]) env[k+'_ty'] = isNumericCol(columns[cols[k]]) ? 'num' : 'cat';
+      });
+      setStatus('Running in R…',{busy:true});
+      const shelter = await new webR.Shelter();
+      try{
+        const cap = await shelter.captureR(this.rProgram, { env });
+        const consoleText = cap.output.filter(o=>o.type==='stdout'||o.type==='stderr').map(o=>o.data).join('\n');
+        const R = rlistToObj(await cap.result.toJs());
+        const ci = pct(env.conf), pc = p => p < .001 ? '< .001' : nz(p,3);
+        const term=R.term, est=R.est, se=R.se, tv=R.tval, pv=R.pval, lo=R.lo, hi=R.hi;
+        const rows = term.map((tm,i)=>[
+          {t:String(tm)},{t:f2(est[i]),num:true},{t:f2(se[i]),num:true},
+          {t:f2(tv[i]),num:true},{t:pc(pv[i]),num:true},{t:`[${f2(lo[i])}, ${f2(hi[i])}]`,num:true}
+        ]);
+        const out = buildAPA({
+          title:`Multiple Linear Regression: ${cols.response} on ${term.length-1} predictor term(s)`,
+          headers:[{t:'Term'},{t:'B',it:true,num:true},{t:'SE',it:true,num:true},{t:'t',it:true,num:true},{t:'p',it:true,num:true},{t:`${ci} CI`,num:true}],
+          rows,
+          note:{
+            html:`<i>Note.</i> Overall model: <i>F</i>(${R.df1[0]}, ${R.df2[0]}) = ${f2(R.f[0])}, <i>p</i> ${pFmt(R.fp[0])}. <i>R</i><sup>2</sup> = ${nz(R.r2[0])}, adjusted <i>R</i><sup>2</sup> = ${nz(R.adjr2[0])}. <i>n</i> = ${R.n[0]}.`,
+            plain:`Note. Overall model: F(${R.df1[0]}, ${R.df2[0]}) = ${f2(R.f[0])}, p ${pFmt(R.fp[0])}. R^2 = ${nz(R.r2[0])}, adjusted R^2 = ${nz(R.adjr2[0])}. n = ${R.n[0]}.`
+          }
+        });
+        document.getElementById('console').textContent = consoleText;
+        document.getElementById('apa').innerHTML = out.screenHtml;
+        lastResult = { plain: out.plain, htmlTable: out.copyHtml };
+        document.getElementById('testPlots').classList.add('hidden');
+        document.getElementById('outStep').classList.remove('hidden');
+        const mn=document.getElementById('methodNote'); mn.innerHTML=this.methodNote; mn.classList.remove('hidden');
+        setStatus(`Done. ${used} rows used${dropped?`, ${dropped} dropped for missing values`:''}.`);
+      } finally { await shelter.purge(); }
     }
   }
 };
@@ -935,6 +1005,7 @@ function eligible(kind){
   if(kind==='group2')  return headers.filter(h=>levelsOf(columns[h]).length===2);
   if(kind==='group_any') return headers.filter(h=>{const k=levelsOf(columns[h]).length; return k>=2 && k<=12;});
   if(kind==='categorical') return headers.filter(h=>{const k=levelsOf(columns[h]).length; return k>=2 && k<=30;});
+  if(kind==='predictor') return headers.filter(h=> isNumericCol(columns[h]) || (levelsOf(columns[h]).length>=2 && levelsOf(columns[h]).length<=30));
   return headers.slice();
 }
 function renderRoles(){
@@ -1038,6 +1109,7 @@ let lastResult = null;
 runBtn.addEventListener('click', async ()=>{
   const t = TESTS[testSel.value];
   runBtn.disabled=true; setStatus('Running in R…',{busy:true});
+  document.getElementById('testPlots').classList.add('hidden');
   const cols = currentCols();
   const active = t.roles.filter(r=>cols[r.key]);   // skip optional roles left empty
 
