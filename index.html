@@ -1097,6 +1097,84 @@ list(lv = lv, ns = ns, ms = ms, ss = ss, k = k,
     }
   },
 
+  median_contrasts: {
+    label: "Pairwise median differences (quantile regression, \u03C4 = 0.5)",
+    dropHint: "Long/tidy data: a numeric outcome column and a grouping column with 2 or more levels.",
+    roles: [
+      { key:'resp', kind:'numeric',   label:'Response — numeric outcome' },
+      { key:'grp',  kind:'group_any', label:'Group — 2 to 12 levels' }
+    ],
+    defaults: { resp:'weight', grp:'feed' },
+    rProgram: `
+suppressMessages(library(quantreg))
+d <- data.frame(y = as.numeric(resp), g = factor(grp))
+lv <- levels(d$g); k <- length(lv); m <- k*(k-1)/2
+ns <- as.numeric(tapply(d$y, d$g, length))
+mds <- as.numeric(tapply(d$y, d$g, median))
+alpha <- 1 - conf
+alpha_b <- alpha / m   # single-step Bonferroni for simultaneous CIs
+cat(sprintf("Pairwise median differences via quantile regression (tau = 0.5)\\n"))
+cat(sprintf("%d comparisons; Holm-adjusted p-values; %.0f%% Bonferroni simultaneous CIs (per-interval %.4f)\\n\\n", m, conf*100, 1 - alpha_b))
+gi <- c(); gj <- c(); est <- c(); se <- c(); tv <- c(); pr <- c(); lo <- c(); hi <- c()
+for (i in 1:(k-1)) for (j in (i+1):k) {
+  dd <- droplevels(d[d$g %in% c(lv[i], lv[j]), ])
+  dd$g <- relevel(dd$g, ref = lv[j])           # coefficient = median(lv[i]) - median(lv[j])
+  fit <- rq(y ~ g, tau = 0.5, data = dd)
+  sm <- summary(fit, se = "nid")
+  e <- sm$coefficients[2,1]; s <- sm$coefficients[2,2]
+  tt <- sm$coefficients[2,3]; p <- sm$coefficients[2,4]
+  dfres <- nrow(dd) - 2
+  hw <- qt(1 - alpha_b/2, dfres) * s
+  gi <- c(gi, lv[i]); gj <- c(gj, lv[j]); est <- c(est, e); se <- c(se, s)
+  tv <- c(tv, tt); pr <- c(pr, p); lo <- c(lo, e - hw); hi <- c(hi, e + hw)
+}
+ph <- p.adjust(pr, method = "holm")
+for (r in 1:m) cat(sprintf("  %s - %s: Mdn diff = %.4f, simultaneous CI [%.4f, %.4f], t = %.3f, p(raw) = %.5g, p(Holm) = %.5g\\n",
+  gi[r], gj[r], est[r], lo[r], hi[r], tv[r], pr[r], ph[r]))
+cat("\\nGroup medians:\\n")
+for (i in 1:k) cat(sprintf("  %s: n = %d, Mdn = %.4f\\n", lv[i], ns[i], mds[i]))
+list(lv = lv, ns = ns, mds = mds, k = k, m = m,
+     gi = gi, gj = gj, est = est, lo = lo, hi = hi, tv = tv, pr = pr, ph = ph)`,
+    async run({env, cols, active, used, dropped}){
+      document.getElementById('edaOut').classList.add('hidden');
+      if(!installed.has('quantreg')){ setStatus('Installing quantreg (one-time download)…',{busy:true}); await webR.installPackages(['quantreg']); installed.add('quantreg'); }
+      setStatus('Running in R…',{busy:true});
+      const shelter = await new webR.Shelter();
+      try{
+        const cap = await shelter.captureR(this.rProgram, { env });
+        const consoleText = cap.output.filter(o=>o.type==='stdout'||o.type==='stderr').map(o=>o.data).join('\n');
+        const R = rlistToObj(await cap.result.toJs());
+        const grp=cols.grp, resp=cols.resp, ci=pct(env.conf);
+        const k=R.k[0], m=R.m[0], lv=R.lv;
+        const pcell = p => p < .001 ? '< .001' : nz(p,3);
+        const rows = lv.map((g,i)=>[
+          {t:String(g)},{t:R.ns[i],num:true},{t:f2(R.mds[i]),num:true}
+        ]);
+        const note = {
+          html:`<i>Note.</i> Pairwise median differences estimated by quantile regression (\u03C4 = 0.5). ${m} comparisons: Holm-adjusted <i>p</i>-values; ${ci} single-step (Bonferroni) simultaneous CIs. Mdn = median.`,
+          plain:`Note. Pairwise median differences estimated by quantile regression (tau = 0.5). ${m} comparisons: Holm-adjusted p-values; ${ci} single-step (Bonferroni) simultaneous CIs. Mdn = median.`
+        };
+        const main = buildAPA({
+          title:`Group Medians and Pairwise Median Differences for ${resp} by ${grp}`,
+          headers:[{t:grp},{t:'n',it:true,num:true},{t:'Mdn',it:true,num:true}],
+          rows, note
+        });
+        let mt = `<p class="tnum" style="margin-top:18px">Pairwise median differences (${ci} simultaneous CIs)</p><table class="apa-tbl"><thead><tr><th>Comparison</th><th class="num"><span style="font-style:italic">Mdn</span> diff.</th><th class="num">${ci} CI</th><th class="num"><span style="font-style:italic">t</span></th><th class="num"><span style="font-style:italic">p</span> (Holm)</th></tr></thead><tbody>`;
+        for(let r=0;r<m;r++){
+          mt += `<tr><td>${String(R.gi[r])} \u2212 ${String(R.gj[r])}</td><td class="num">${f2(R.est[r])}</td><td class="num">[${f2(R.lo[r])}, ${f2(R.hi[r])}]</td><td class="num">${f2(R.tv[r])}</td><td class="num">${pcell(R.ph[r])}</td></tr>`;
+        }
+        mt += `</tbody></table>`;
+        document.getElementById('console').textContent = consoleText;
+        document.getElementById('apa').innerHTML = main.screenHtml + mt;
+        lastResult = { plain: main.plain, htmlTable: main.copyHtml };
+        document.getElementById('outStep').classList.remove('hidden');
+        const methodNote = `<b>Why this analysis.</b> Quantile regression at \u03C4 = 0.5 estimates the difference between group <i>medians</i> \u2014 a dimensioned location shift in the outcome's own units, the right estimand for interval/ratio outcomes when means are not the target. (The rank-based Brunner-Munzel tests stochastic dominance, not medians \u2014 Divine et al., 2018; this module is the one that actually compares medians.) Multiplicity is handled as in the proportions section: Holm-adjusted <i>p</i>-values control the familywise error rate (Holm, 1979), and the CIs are single-step Bonferroni simultaneous intervals so all ${m} hold jointly at the ${pct(env.conf)} level. Standard errors use the kernel ("nid") method, which allows unequal spread across groups.`;
+        const mn=document.getElementById('methodNote'); mn.innerHTML=methodNote; mn.classList.remove('hidden');
+        setStatus(`Done. ${used} rows used${dropped?`, ${dropped} dropped for missing values`:''}.`);
+      } finally { await shelter.purge(); }
+    }
+  },
+
   fisher: {
     label: "Fisher's exact test (independence, sparse tables)",
     dropHint: "Two categorical columns. If your data is pre-aggregated (one row per cell with a frequency), also pick the counts column. Use this when expected counts are small.",
