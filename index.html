@@ -650,6 +650,45 @@ list(chi2 = unname(ct$statistic), df = unname(ct$parameter), p = ct$p.value, N =
         setStatus(`Done. ${used} rows used${dropped?`, ${dropped} dropped for missing values`:''}.`);
       } finally { await shelter.purge(); }
     }
+  },
+
+  oneprop: {
+    label: "One-sample proportion (Wilson CI + score test)",
+    dropHint: "A categorical column with exactly 2 levels. If pre-aggregated, also pick the counts column.",
+    methodNote: "<b>Why this interval.</b> The Wilson score interval is used for the proportion because it keeps coverage close to the nominal level even for small samples or proportions near 0 or 1, unlike the textbook Wald interval (Brown, Cai &amp; DasGupta, 2001).",
+    roles: [
+      { key:'outcome', kind:'group2', label:'Outcome — categorical, exactly 2 levels' },
+      { key:'counts',  kind:'numeric', label:'Counts (optional) — frequency per category, for pre-aggregated data', optional:true }
+    ],
+    params: [
+      { key:'success', type:'level', fromRole:'outcome', default:'last', label:'Success category — the level counted as a success' },
+      { key:'p0', type:'number', default:0.5, label:'Hypothesized proportion (p\u2080)' }
+    ],
+    defaults: { outcome:'Gender', counts:'Count' },
+    resultKeys: ['x','n','phat','z','p','cil','ciu','p0'],
+    rProgram: `
+o <- factor(outcome)
+if (exists("counts")) {
+  w <- as.numeric(counts); n <- sum(w); x <- sum(w[as.character(o) == success])
+} else { n <- length(o); x <- sum(as.character(o) == success) }
+ptst <- prop.test(x, n, p = p0, correct = FALSE, conf.level = conf)
+phat <- x / n
+zstat <- sign(phat - p0) * sqrt(unname(ptst$statistic))
+cat(sprintf("Success category: %s\\n\\n", success))
+print(ptst)
+c(x=x, n=n, phat=phat, z=zstat, p=ptst$p.value, cil=ptst$conf.int[1], ciu=ptst$conf.int[2], p0=p0)`,
+    render(R, ctx){
+      const outcome = ctx.cols.outcome, success = ctx.env.success;
+      return buildAPA({
+        title:`One-Sample Proportion Test for ${outcome} (success = ${success})`,
+        headers:[{t:'Category'},{t:'x',it:true,num:true},{t:'n',it:true,num:true},{t:'p\u0302',num:true}],
+        rows:[[{t:success},{t:R.x,num:true},{t:R.n,num:true},{t:nz(R.phat)}]],
+        note:{
+          html:`<i>Note.</i> <i>z</i> = ${f2(R.z)}, <i>p</i> ${pFmt(R.p)}, two-sided, test value = ${nz(R.p0)}. Sample proportion <i>p&#770;</i> = ${nz(R.phat)}, ${pct(ctx.conf)} Wilson CI [${nz(R.cil)}, ${nz(R.ciu)}].`,
+          plain:`Note. z = ${f2(R.z)}, p ${pFmt(R.p)}, two-sided, test value = ${nz(R.p0)}. Sample proportion p-hat = ${nz(R.phat)}, ${pct(ctx.conf)} Wilson CI [${nz(R.cil)}, ${nz(R.ciu)}].`
+        }
+      });
+    }
   }
 };
 
@@ -748,6 +787,8 @@ function renderRoles(){
             <select data-role="${role.key}" id="role_${role.key}">${list||'<option value="">(no eligible column)</option>'}</select></div>`;
   }).join('');
   if(t.params) html += t.params.map(pp=>{
+    if(pp.type==='level') return `<div><label class="fld" for="param_${pp.key}">${pp.label}</label>
+     <select data-param="${pp.key}" id="param_${pp.key}"></select></div>`;
     const ty = pp.type==='text' ? 'text' : 'number';
     const step = ty==='number' ? ' step="any"' : '';
     return `<div><label class="fld" for="param_${pp.key}">${pp.label}</label>
@@ -763,13 +804,37 @@ function renderRoles(){
     sel.addEventListener('change', validate);
     if(t.levelsPreview) sel.addEventListener('change', updateLevelHint);
   });
-  if(t.params) t.params.forEach(pp=>{
-    rolesContainer.querySelector(`[data-param="${pp.key}"]`).addEventListener('input', validate);
-  });
+  if(t.params){
+    updateLevelParams();
+    t.params.forEach(pp=>{
+      const el = rolesContainer.querySelector(`[data-param="${pp.key}"]`);
+      el.addEventListener(pp.type==='level' ? 'change' : 'input', validate);
+      if(pp.type==='level'){
+        const src = rolesContainer.querySelector(`[data-role="${pp.fromRole}"]`);
+        if(src) src.addEventListener('change', updateLevelParams);
+      }
+    });
+  }
   runBtn.textContent = t.runLabel || 'Run analysis';
   updateEdaControls();
   updateLevelHint();
   validate();
+}
+
+function updateLevelParams(){
+  const t = TESTS[testSel.value];
+  if(!t.params) return;
+  t.params.forEach(pp=>{
+    if(pp.type!=='level') return;
+    const sel = rolesContainer.querySelector(`[data-param="${pp.key}"]`);
+    const src = rolesContainer.querySelector(`[data-role="${pp.fromRole}"]`);
+    const colName = src ? src.value : '';
+    const lv = (colName && columns[colName]) ? levelsOf(columns[colName]).slice().sort() : [];
+    const prev = sel.value;
+    sel.innerHTML = lv.map(l=>`<option>${l}</option>`).join('');
+    if(lv.includes(prev)) sel.value = prev;
+    else if(pp.default==='last' && lv.length) sel.value = lv[lv.length-1];
+  });
 }
 
 function updateLevelHint(){
@@ -780,7 +845,7 @@ function updateLevelHint(){
   const colName = sel ? sel.value : '';
   if(colName && columns[colName]){
     const lv = levelsOf(columns[colName]).slice().sort();
-    el.textContent = `Categories in order: ${lv.join(', ')}`;
+    el.innerHTML = `Categories in order: ${lv.map(x=>`<b>${x}</b>`).join(', ')}.<br>This order is alphabetical, which matches R for ordinary text or number-coded labels. If labels ever have unusual capitalization or leading symbols, R's ordering (shown in the output table) is the authoritative one.`;
   } else { el.textContent=''; }
 }
 
@@ -832,7 +897,7 @@ runBtn.addEventListener('click', async ()=>{
   // scalar parameters (e.g. hypothesized mean) become length-1 R values
   if(t.params) t.params.forEach(pp=>{
     const val = rolesContainer.querySelector(`[data-param="${pp.key}"]`).value;
-    env[pp.key] = (pp.type==='text') ? String(val) : Number(val);
+    env[pp.key] = (pp.type==='text'||pp.type==='level') ? String(val) : Number(val);
   });
   env.conf = currentConf();   // confidence level available to every module's R
 
@@ -858,7 +923,7 @@ runBtn.addEventListener('click', async ()=>{
     const vals = await cap.result.toArray();
     const R={}; t.resultKeys.forEach((k,i)=>R[k]=vals[i]);
 
-    const ctx = { cols, levels:{}, conf: env.conf };
+    const ctx = { cols, levels:{}, conf: env.conf, env };
     t.roles.forEach(role=>{ if(role.kind==='group2') ctx.levels[role.key]=levelsOf(columns[cols[role.key]]).sort(); });
 
     const out = t.render(R, ctx);
