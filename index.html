@@ -41,9 +41,9 @@
   .roles{display:grid; grid-template-columns:1fr 1fr; gap:16px}
   @media(max-width:640px){.roles{grid-template-columns:1fr}}
   label.fld{display:block; font-size:13px; color:var(--ink-soft); margin-bottom:5px}
-  select, input[type=number]{width:100%; padding:9px 10px; font:inherit; font-size:14px; border:1px solid var(--rule);
+  select, input[type=number], input[type=text]{width:100%; padding:9px 10px; font:inherit; font-size:14px; border:1px solid var(--rule);
          border-radius:6px; background:#fff; color:var(--ink)}
-  select:focus, input[type=number]:focus{outline:2px solid var(--accent); outline-offset:1px; border-color:var(--accent)}
+  select:focus, input[type=number]:focus, input[type=text]:focus{outline:2px solid var(--accent); outline-offset:1px; border-color:var(--accent)}
   .run{margin-top:18px}
   button.run-btn{font:inherit; font-weight:600; font-size:15px; color:#fff; background:var(--accent);
        border:0; border-radius:7px; padding:11px 22px; cursor:pointer; transition:.15s}
@@ -584,6 +584,67 @@ list(chi2 = unname(ct$statistic), df = unname(ct$parameter), p = ct$p.value,
         setStatus(`Done. ${used} rows used${dropped?`, ${dropped} dropped for missing values`:''}.`);
       } finally { await shelter.purge(); }
     }
+  },
+
+  gof: {
+    label: "Chi-square goodness-of-fit (+ Cohen's w)",
+    dropHint: "One categorical column. If pre-aggregated (one row per category with a frequency), also pick the counts column.",
+    methodNote: "<b>Why this effect size.</b> Cohen's <i>w</i> summarizes how far the observed counts depart from the expected. Because the \u03C7\u00B2 test is one-sided, its interval is shown at the scaled confidence level (Steiger, 2004; Lakens, 2013).",
+    roles: [
+      { key:'variable', kind:'categorical', label:'Variable — categorical' },
+      { key:'counts',   kind:'numeric',     label:'Counts (optional) — frequency per category, for pre-aggregated data', optional:true }
+    ],
+    params: [
+      { key:'propstr', type:'text', label:'Expected proportions (optional) — comma-separated, in category order shown below; blank = equal', default:'' }
+    ],
+    defaults: { variable:'Age', counts:'Count' },
+    rProgram: `
+library(effectsize)
+v <- factor(variable)
+if (exists("counts")) { dd <- data.frame(v = v, w = as.numeric(counts)); tab <- xtabs(w ~ v, data = dd) } else { tab <- table(v) }
+k <- length(tab)
+ps <- suppressWarnings(as.numeric(trimws(strsplit(propstr, ",")[[1]])))
+ps <- ps[is.finite(ps)]
+if (length(ps) == k && all(ps > 0)) { p <- ps/sum(ps) } else { p <- rep(1/k, k) }
+ct <- chisq.test(tab, p = p)
+cw <- cohens_w(tab, p = p, ci = 2*conf - 1, alternative = "two.sided")
+print(ct)
+cat("\\nObserved counts:\\n"); print(tab)
+cat("\\nExpected counts (each should be >= 5):\\n"); print(round(ct$expected, 2))
+cat(sprintf("\\nExpected proportions used: %s\\n", paste(round(p, 4), collapse = ", ")))
+list(chi2 = unname(ct$statistic), df = unname(ct$parameter), p = ct$p.value, N = sum(tab),
+     w = cw[[1]], cil = cw$CI_low, ciu = cw$CI_high, minexp = min(ct$expected),
+     k = k, lab = names(tab), obs = as.vector(tab), exp = as.vector(ct$expected))`,
+    async run({env, cols, active, used, dropped}){
+      document.getElementById('edaOut').classList.add('hidden');
+      if(!installed.has('effectsize')){ setStatus('Installing effectsize (one-time download)…',{busy:true}); await webR.installPackages(['effectsize']); installed.add('effectsize'); }
+      setStatus('Running in R…',{busy:true});
+      const shelter = await new webR.Shelter();
+      try{
+        const cap = await shelter.captureR(this.rProgram, { env });
+        const consoleText = cap.output.filter(o=>o.type==='stdout'||o.type==='stderr').map(o=>o.data).join('\n');
+        const R = rlistToObj(await cap.result.toJs());
+        const k=R.k[0], lab=R.lab, obs=R.obs, exp=R.exp, varName=cols.variable;
+        const headers=[{t:varName},{t:'Observed',num:true},{t:'Expected',num:true}];
+        const rows=[];
+        for(let i=0;i<k;i++){ rows.push([{t:String(lab[i])},{t:obs[i],num:true},{t:f2(exp[i]),num:true}]); }
+        const sparse = R.minexp[0] < 5;
+        const ciPct = Math.round((2*env.conf - 1)*100);
+        const warnH = sparse ? ` Some expected counts &lt; 5; interpret with caution.` : '';
+        const warnP = sparse ? ` Some expected counts < 5; interpret with caution.` : '';
+        const note = {
+          html:`<i>Note.</i> \u03C7\u00B2(${R.df[0]}, <i>N</i> = ${R.N[0]}) = ${f2(R.chi2[0])}, <i>p</i> ${pFmt(R.p[0])}. Cohen's <i>w</i> = ${nz(R.w[0])}, ${ciPct}% CI [${nz(R.cil[0])}, ${nz(R.ciu[0])}].${warnH}`,
+          plain:`Note. chi-square(${R.df[0]}, N = ${R.N[0]}) = ${f2(R.chi2[0])}, p ${pFmt(R.p[0])}. Cohen's w = ${nz(R.w[0])}, ${ciPct}% CI [${nz(R.cil[0])}, ${nz(R.ciu[0])}].${warnP}`
+        };
+        const out = buildAPA({ title:`Goodness-of-Fit Test for ${varName}`, headers, rows, note });
+        document.getElementById('console').textContent = consoleText;
+        document.getElementById('apa').innerHTML = out.screenHtml;
+        lastResult = { plain: out.plain, htmlTable: out.copyHtml };
+        document.getElementById('outStep').classList.remove('hidden');
+        const mn=document.getElementById('methodNote'); mn.innerHTML=this.methodNote; mn.classList.remove('hidden');
+        setStatus(`Done. ${used} rows used${dropped?`, ${dropped} dropped for missing values`:''}.`);
+      } finally { await shelter.purge(); }
+    }
   }
 };
 
@@ -681,9 +742,12 @@ function renderRoles(){
     return `<div><label class="fld" for="role_${role.key}">${role.label}</label>
             <select data-role="${role.key}" id="role_${role.key}">${list||'<option value="">(no eligible column)</option>'}</select></div>`;
   }).join('');
-  if(t.params) html += t.params.map(pp=>
-    `<div><label class="fld" for="param_${pp.key}">${pp.label}</label>
-     <input type="number" step="any" data-param="${pp.key}" id="param_${pp.key}" value="${pp.default}"></div>`).join('');
+  if(t.params) html += t.params.map(pp=>{
+    const ty = pp.type==='text' ? 'text' : 'number';
+    const step = ty==='number' ? ' step="any"' : '';
+    return `<div><label class="fld" for="param_${pp.key}">${pp.label}</label>
+     <input type="${ty}"${step} data-param="${pp.key}" id="param_${pp.key}" value="${pp.default}"></div>`;
+  }).join('');
   rolesContainer.innerHTML = html;
   // sensible defaults + listeners
   t.roles.forEach(role=>{
@@ -715,6 +779,7 @@ function validate(){
     if(role.kind==='group2' && cols[role.key] && levelsOf(columns[cols[role.key]]).length!==2){ ok=false; msg='The group column must have exactly 2 levels.'; }
   }
   if(t.params) for(const pp of t.params){
+    if((pp.type||'number')!=='number') continue;
     const el = rolesContainer.querySelector(`[data-param="${pp.key}"]`);
     if(!el || el.value==='' || !Number.isFinite(Number(el.value))){ ok=false; }
   }
@@ -746,7 +811,8 @@ runBtn.addEventListener('click', async ()=>{
 
   // scalar parameters (e.g. hypothesized mean) become length-1 R values
   if(t.params) t.params.forEach(pp=>{
-    env[pp.key] = Number(rolesContainer.querySelector(`[data-param="${pp.key}"]`).value);
+    const val = rolesContainer.querySelector(`[data-param="${pp.key}"]`).value;
+    env[pp.key] = (pp.type==='text') ? String(val) : Number(val);
   });
   env.conf = currentConf();   // confidence level available to every module's R
 
