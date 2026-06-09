@@ -1105,9 +1105,15 @@ list(lv = lv, ns = ns, ms = ms, ss = ss, k = k,
       { key:'col',    kind:'categorical', label:'Column variable — categorical' },
       { key:'counts', kind:'numeric',     label:'Counts (optional) — frequency per cell, for pre-aggregated data', optional:true }
     ],
+    params: [
+      { key:'rowfirst', type:'level', fromRole:'row', default:'first', label:'Row order — level to place in the first row (e.g. the exposed group)' },
+      { key:'colfirst', type:'level', fromRole:'col', default:'first', label:'Column order — level to place in the first column (e.g. the outcome of interest)' }
+    ],
     defaults: { row:'Gender', col:'Age', counts:'Count' },
     rProgram: `
 rf <- factor(row); cf <- factor(col)
+if (nchar(rowfirst) && rowfirst %in% levels(rf)) rf <- relevel(rf, ref = rowfirst)
+if (nchar(colfirst) && colfirst %in% levels(cf)) cf <- relevel(cf, ref = colfirst)
 if (exists("counts")) {
   dd <- data.frame(rf = rf, cf = cf, w = as.numeric(counts))
   tab <- xtabs(w ~ rf + cf, data = dd)
@@ -1405,6 +1411,7 @@ function updateLevelParams(){
     sel.innerHTML = lv.map(l=>`<option>${l}</option>`).join('');
     if(lv.includes(prev)) sel.value = prev;
     else if(pp.default==='last' && lv.length) sel.value = lv[lv.length-1];
+    else if(pp.default==='first' && lv.length) sel.value = lv[0];
   });
 }
 
