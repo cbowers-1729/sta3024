@@ -858,7 +858,7 @@ c(b0=co[1,1], b0se=co[1,2], b0t=co[1,3], b0p=co[1,4], b0l=ci[1,1], b0u=ci[1,2],
   multreg: {
     label: "Multiple linear regression",
     dropHint: "A numeric response and one to four predictors (numeric or categorical). Categorical predictors are dummy-coded automatically.",
-    methodNote: "<b>Multiple regression.</b> Each coefficient is the estimated change in the response per one-unit increase in that predictor, holding the others fixed; for a categorical predictor each row is a level compared with its reference level (dummy coding). Coefficient intervals use the <i>t</i> distribution. Adjusted <i>R</i>\u00B2 penalizes for the number of predictors, so it is the fairer fit measure when comparing models.",
+    methodNote: "<b>Multiple regression.</b> Each coefficient is the estimated change in the response per one-unit increase in that predictor, holding the others fixed; a categorical predictor contributes one row per level versus its reference (dummy coding), and an interaction term (e.g. <code>age:sexM</code>) is how much the slope of one predictor changes across the other. Coefficient intervals use the <i>t</i> distribution; adjusted <i>R</i>\u00B2 penalizes for the number of terms, so it tells you whether added interactions earn their keep.",
     roles: [
       { key:'response',   kind:'numeric',   label:'Response (Y) — numeric outcome' },
       { key:'predictor1', kind:'predictor', label:'Predictor 1 — numeric or categorical' },
@@ -867,31 +867,104 @@ c(b0=co[1,1], b0se=co[1,2], b0t=co[1,3], b0p=co[1,4], b0l=ci[1,1], b0u=ci[1,2],
       { key:'predictor4', kind:'predictor', label:'Predictor 4 (optional)', optional:true }
     ],
     defaults: {},
+    extraHtml: `<label class="fld" for="mlrInter">Interactions</label>
+      <select id="mlrInter" style="max-width:280px">
+        <option value="none">None (additive)</option>
+        <option value="two">All two-way</option>
+        <option value="custom">Custom</option>
+      </select>
+      <div id="mlrCustom" class="hidden" style="margin-top:10px"></div>`,
+    wireExtra(){
+      const sel = document.getElementById('mlrInter');
+      const cust = document.getElementById('mlrCustom');
+      const refresh = ()=>{ if(sel.value==='custom'){ cust.classList.remove('hidden'); mlrPopulateCustom(); } else { cust.classList.add('hidden'); } };
+      sel.addEventListener('change', refresh);
+      ['predictor1','predictor2','predictor3','predictor4'].forEach(k=>{
+        const s = rolesContainer.querySelector(`[data-role="${k}"]`);
+        if(s) s.addEventListener('change', ()=>{ if(sel.value==='custom') mlrPopulateCustom(); });
+      });
+      refresh();
+    },
     rProgram: `
+suppressMessages(library(ggplot2))
 df <- data.frame(.y = as.numeric(response), check.names = FALSE)
 addp <- function(v, nm, ty){ df[[nm]] <<- if (ty == "num") as.numeric(v) else factor(v) }
 if (exists("predictor1")) addp(predictor1, predictor1_name, predictor1_ty)
 if (exists("predictor2")) addp(predictor2, predictor2_name, predictor2_ty)
 if (exists("predictor3")) addp(predictor3, predictor3_name, predictor3_ty)
 if (exists("predictor4")) addp(predictor4, predictor4_name, predictor4_ty)
-fit <- lm(.y ~ ., data = df)
+fit <- lm(as.formula(fml), data = df)
 s <- summary(fit); co <- s$coefficients; ci <- confint(fit, level = conf)
 fstat <- unname(s$fstatistic[1]); df1 <- unname(s$fstatistic[2]); df2 <- unname(s$fstatistic[3])
 print(s)
+cat(sprintf("\\nModel: %s\\n", fml))
 cat(sprintf("\\n%.0f%% CI for coefficients:\\n", conf*100)); print(ci)
+ACC <- '#0f6b5c'; sig <- s$sigma
+PAL <- c('#0f6b5c','#c98a2b','#3f6d9e','#8a4f7d','#6b8f3a','#b0563a')
+secy <- scale_y_continuous(sec.axis = sec_axis(~ . / sig, name = "Standardized residual (residual / s)", breaks = -3:3))
+hl <- list(geom_hline(yintercept = 0, linetype = 2),
+           geom_hline(yintercept = c(-2,2)*sig, linetype = 3, colour = "grey55"),
+           geom_hline(yintercept = c(-3,3)*sig, linetype = 3, colour = "grey78"))
+rf <- data.frame(.fitted = fitted(fit), .resid = resid(fit))
+print(ggplot(rf, aes(.fitted, .resid)) + hl + geom_point(alpha=.5, color=ACC) + secy +
+  theme_minimal(base_size=13) + labs(x="Fitted value", y="Residual", title="Residuals vs fitted (right axis: standardized)"))
+predcols <- setdiff(names(df), ".y")
+for (nm in predcols) {
+  dd <- data.frame(xx = df[[nm]], .resid = resid(fit))
+  if (is.numeric(dd$xx)) {
+    print(ggplot(dd, aes(xx, .resid)) + hl + geom_point(alpha=.5, color=ACC) + secy +
+      theme_minimal(base_size=13) + labs(x=nm, y="Residual", title=paste0("Residuals vs ", nm)))
+  } else {
+    print(ggplot(dd, aes(xx, .resid)) + hl + geom_boxplot(outlier.shape=NA, fill=NA, colour="grey60") +
+      geom_jitter(width=.15, alpha=.5, color=ACC) + secy +
+      theme_minimal(base_size=13) + labs(x=nm, y="Residual", title=paste0("Residuals vs ", nm)))
+  }
+}
+types <- sapply(df[predcols], function(cc) if (is.numeric(cc)) "num" else "cat")
+scat <- 0
+if (length(predcols)==2 && sum(types=="num")==1 && sum(types=="cat")==1) {
+  numnm <- predcols[types=="num"][1]; catnm <- predcols[types=="cat"][1]
+  rng <- range(df[[numnm]], na.rm=TRUE)
+  gd <- expand.grid(seq(rng[1], rng[2], length.out=120), levels(df[[catnm]]))
+  names(gd) <- c(numnm, catnm)
+  gd$.pred <- predict(fit, newdata=gd)
+  pts <- data.frame(xx=df[[numnm]], yy=df$.y, gg=df[[catnm]])
+  ln  <- data.frame(xx=gd[[numnm]], yy=gd$.pred, gg=gd[[catnm]])
+  print(ggplot() +
+    geom_point(data=pts, aes(xx, yy, color=gg), alpha=.55) +
+    geom_line(data=ln, aes(xx, yy, color=gg), linewidth=1) +
+    scale_color_manual(values=PAL) +
+    theme_minimal(base_size=13) + labs(x=numnm, y=response_name, color=catnm,
+      title=paste0(response_name, " vs ", numnm, " by ", catnm, " (fitted lines from the model)")))
+  scat <- 1
+}
 list(term = rownames(co), est = co[,1], se = co[,2], tval = co[,3], pval = co[,4],
      lo = ci[,1], hi = ci[,2], f = fstat, df1 = df1, df2 = df2,
      fp = pf(fstat, df1, df2, lower.tail = FALSE),
-     r2 = s$r.squared, adjr2 = s$adj.r.squared, n = nrow(df))`,
+     r2 = s$r.squared, adjr2 = s$adj.r.squared, n = nrow(df), scat = scat)`,
     async run({env, cols, active, used, dropped}){
       document.getElementById('edaOut').classList.add('hidden');
-      ['predictor1','predictor2','predictor3','predictor4'].forEach(k=>{
-        if(cols[k]) env[k+'_ty'] = isNumericCol(columns[cols[k]]) ? 'num' : 'cat';
-      });
+      const predKeys = ['predictor1','predictor2','predictor3','predictor4'].filter(k=>cols[k]);
+      predKeys.forEach(k=>{ env[k+'_ty'] = isNumericCol(columns[cols[k]]) ? 'num' : 'cat'; });
+      // build the model formula from validated column names
+      const bq = s => '`'+s+'`';
+      const predNames = predKeys.map(k=>cols[k]);
+      const main = predNames.map(bq).join(' + ');
+      const inter = [];
+      const mode = document.getElementById('mlrInter').value;
+      if(mode==='two'){
+        for(let i=0;i<predNames.length;i++) for(let j=i+1;j<predNames.length;j++) inter.push(bq(predNames[i])+':'+bq(predNames[j]));
+      } else if(mode==='custom'){
+        [...document.querySelectorAll('#mlrCustom [data-inter]:checked')].forEach(c=>{
+          inter.push(c.value.split('|').map(bq).join(':'));
+        });
+      }
+      env.fml = '.y ~ ' + [main, ...inter].filter(Boolean).join(' + ');
+      if(!ggReady){ setStatus('Installing the plotting library (one-time download)…',{busy:true}); await webR.installPackages(['ggplot2']); ggReady=true; }
       setStatus('Running in R…',{busy:true});
       const shelter = await new webR.Shelter();
       try{
-        const cap = await shelter.captureR(this.rProgram, { env });
+        const cap = await shelter.captureR(this.rProgram, { env, captureGraphics:{ width:820, height:460 } });
         const consoleText = cap.output.filter(o=>o.type==='stdout'||o.type==='stderr').map(o=>o.data).join('\n');
         const R = rlistToObj(await cap.result.toJs());
         const ci = pct(env.conf), pc = p => p < .001 ? '< .001' : nz(p,3);
@@ -901,7 +974,7 @@ list(term = rownames(co), est = co[,1], se = co[,2], tval = co[,3], pval = co[,4
           {t:f2(tv[i]),num:true},{t:pc(pv[i]),num:true},{t:`[${f2(lo[i])}, ${f2(hi[i])}]`,num:true}
         ]);
         const out = buildAPA({
-          title:`Multiple Linear Regression: ${cols.response} on ${term.length-1} predictor term(s)`,
+          title:`Multiple Linear Regression: ${cols.response} on ${predNames.join(', ')}${inter.length?' (with interaction)':''}`,
           headers:[{t:'Term'},{t:'B',it:true,num:true},{t:'SE',it:true,num:true},{t:'t',it:true,num:true},{t:'p',it:true,num:true},{t:`${ci} CI`,num:true}],
           rows,
           note:{
@@ -912,7 +985,13 @@ list(term = rownames(co), est = co[,1], se = co[,2], tval = co[,3], pval = co[,4
         document.getElementById('console').textContent = consoleText;
         document.getElementById('apa').innerHTML = out.screenHtml;
         lastResult = { plain: out.plain, htmlTable: out.copyHtml };
-        document.getElementById('testPlots').classList.add('hidden');
+        const caps = ['Residuals vs fitted (right axis: standardized)'].concat(predNames.map(n=>`Residuals vs ${n}`));
+        if(R.scat && R.scat[0]===1){
+          const numName = predNames.find(n=> isNumericCol(columns[n]));
+          const catName = predNames.find(n=> !isNumericCol(columns[n]));
+          caps.push(`${cols.response} vs ${numName} by ${catName} (fitted lines)`);
+        }
+        renderPlotsInto(cap.images || [], caps);
         document.getElementById('outStep').classList.remove('hidden');
         const mn=document.getElementById('methodNote'); mn.innerHTML=this.methodNote; mn.classList.remove('hidden');
         setStatus(`Done. ${used} rows used${dropped?`, ${dropped} dropped for missing values`:''}.`);
@@ -1047,9 +1126,41 @@ function renderRoles(){
     });
   }
   runBtn.textContent = t.runLabel || 'Run analysis';
+  if(t.extraHtml){ const d=document.createElement('div'); d.style.gridColumn='1/-1'; d.innerHTML=t.extraHtml; rolesContainer.appendChild(d); }
+  if(t.wireExtra) t.wireExtra();
   updateEdaControls();
   updateLevelHint();
   validate();
+}
+
+function mlrPopulateCustom(){
+  const wrap = document.getElementById('mlrCustom'); if(!wrap) return;
+  const preds = ['predictor1','predictor2','predictor3','predictor4']
+    .map(k=>rolesContainer.querySelector(`[data-role="${k}"]`))
+    .filter(s=>s && s.value).map(s=>s.value);
+  const uniq = [...new Set(preds)];
+  const combos = [];
+  for(let i=0;i<uniq.length;i++) for(let j=i+1;j<uniq.length;j++) combos.push([uniq[i],uniq[j]]);
+  for(let i=0;i<uniq.length;i++) for(let j=i+1;j<uniq.length;j++) for(let k=j+1;k<uniq.length;k++) combos.push([uniq[i],uniq[j],uniq[k]]);
+  const prev = new Set([...wrap.querySelectorAll('input:checked')].map(c=>c.value));
+  wrap.innerHTML = combos.length
+    ? '<div class="fld" style="margin-bottom:6px">Interaction terms to include</div>' + combos.map(c=>{
+        const v=c.join('|'), lab=c.join(' \u00D7 ');
+        return `<label style="display:inline-flex;align-items:center;gap:6px;margin:2px 12px 2px 0;font-weight:400"><input type="checkbox" data-inter value="${v}"${prev.has(v)?' checked':''}> ${lab}</label>`;
+      }).join('')
+    : '<span class="hint">Select at least two predictors to form interactions.</span>';
+}
+
+function renderPlotsInto(images, captions){
+  const wrap = document.getElementById('testPlots'); wrap.innerHTML='';
+  if(!images || !images.length){ wrap.classList.add('hidden'); return; }
+  images.forEach((img,i)=>{
+    const card=document.createElement('div'); card.className='plotcard';
+    const c=document.createElement('p'); c.className='cap'; c.textContent=captions[i]||('Plot '+(i+1));
+    const cv=document.createElement('canvas'); cv.width=img.width; cv.height=img.height;
+    cv.getContext('2d').drawImage(img,0,0); card.appendChild(c); card.appendChild(cv); wrap.appendChild(card);
+  });
+  wrap.classList.remove('hidden');
 }
 
 function updateLevelParams(){
