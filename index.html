@@ -655,7 +655,7 @@ list(chi2 = unname(ct$statistic), df = unname(ct$parameter), p = ct$p.value, N =
   oneprop: {
     label: "One-sample proportion (Wilson CI + score test)",
     dropHint: "A categorical column with exactly 2 levels. If pre-aggregated, also pick the counts column.",
-    methodNote: "<b>Why this interval.</b> The Wilson score interval is used for the proportion because it keeps coverage close to the nominal level even for small samples or proportions near 0 or 1, unlike the textbook Wald interval (Brown, Cai &amp; DasGupta, 2001).",
+    methodNote: "<b>Effect size and interval.</b> The Wilson score interval is used for the proportion (rather than the textbook Wald interval) because it keeps coverage near the nominal level even for small samples or proportions near 0 or 1 (Brown, Cai &amp; DasGupta, 2001). Cohen's <i>h</i><sub>2</sub> is the one-proportion arcsine index, 2\u00B7arcsin\u221A<i>p&#770;</i> \u2212 2\u00B7arcsin\u221A<i>p</i>\u2080, reported at the full confidence level.",
     roles: [
       { key:'outcome', kind:'group2', label:'Outcome — categorical, exactly 2 levels' },
       { key:'counts',  kind:'numeric', label:'Counts (optional) — frequency per category, for pre-aggregated data', optional:true }
@@ -665,7 +665,7 @@ list(chi2 = unname(ct$statistic), df = unname(ct$parameter), p = ct$p.value, N =
       { key:'p0', type:'number', default:0.5, label:'Hypothesized proportion (p\u2080)' }
     ],
     defaults: { outcome:'Gender', counts:'Count' },
-    resultKeys: ['x','n','phat','z','p','cil','ciu','p0'],
+    resultKeys: ['x','n','phat','z','p','cil','ciu','p0','h2','h2l','h2u'],
     rProgram: `
 o <- factor(outcome)
 if (exists("counts")) {
@@ -674,9 +674,14 @@ if (exists("counts")) {
 ptst <- prop.test(x, n, p = p0, correct = FALSE, conf.level = conf)
 phat <- x / n
 zstat <- sign(phat - p0) * sqrt(unname(ptst$statistic))
+h2 <- 2*asin(sqrt(phat)) - 2*asin(sqrt(p0))
+z.c <- qnorm(1 - (1-conf)/2); se.h2 <- sqrt(1/n)
+h2.low <- h2 - z.c*se.h2; h2.up <- h2 + z.c*se.h2
 cat(sprintf("Success category: %s\\n\\n", success))
 print(ptst)
-c(x=x, n=n, phat=phat, z=zstat, p=ptst$p.value, cil=ptst$conf.int[1], ciu=ptst$conf.int[2], p0=p0)`,
+cat(sprintf("Cohen's h2 (arcsine vs p0) = %.3f, %.0f%% CI [%.3f, %.3f]\\n", h2, conf*100, h2.low, h2.up))
+c(x=x, n=n, phat=phat, z=zstat, p=ptst$p.value, cil=ptst$conf.int[1], ciu=ptst$conf.int[2], p0=p0,
+  h2=h2, h2l=h2.low, h2u=h2.up)`,
     render(R, ctx){
       const outcome = ctx.cols.outcome, success = ctx.env.success;
       return buildAPA({
@@ -684,8 +689,8 @@ c(x=x, n=n, phat=phat, z=zstat, p=ptst$p.value, cil=ptst$conf.int[1], ciu=ptst$c
         headers:[{t:'Category'},{t:'x',it:true,num:true},{t:'n',it:true,num:true},{t:'p\u0302',num:true}],
         rows:[[{t:success},{t:R.x,num:true},{t:R.n,num:true},{t:nz(R.phat)}]],
         note:{
-          html:`<i>Note.</i> <i>z</i> = ${f2(R.z)}, <i>p</i> ${pFmt(R.p)}, two-sided, test value = ${nz(R.p0)}. Sample proportion <i>p&#770;</i> = ${nz(R.phat)}, ${pct(ctx.conf)} Wilson CI [${nz(R.cil)}, ${nz(R.ciu)}].`,
-          plain:`Note. z = ${f2(R.z)}, p ${pFmt(R.p)}, two-sided, test value = ${nz(R.p0)}. Sample proportion p-hat = ${nz(R.phat)}, ${pct(ctx.conf)} Wilson CI [${nz(R.cil)}, ${nz(R.ciu)}].`
+          html:`<i>Note.</i> <i>z</i> = ${f2(R.z)}, <i>p</i> ${pFmt(R.p)}, two-sided, test value = ${nz(R.p0)}. Sample proportion <i>p&#770;</i> = ${nz(R.phat)}, ${pct(ctx.conf)} Wilson CI [${nz(R.cil)}, ${nz(R.ciu)}]. Cohen's <i>h</i><sub>2</sub> = ${f2(R.h2)}, ${pct(ctx.conf)} CI [${f2(R.h2l)}, ${f2(R.h2u)}].`,
+          plain:`Note. z = ${f2(R.z)}, p ${pFmt(R.p)}, two-sided, test value = ${nz(R.p0)}. Sample proportion p-hat = ${nz(R.phat)}, ${pct(ctx.conf)} Wilson CI [${nz(R.cil)}, ${nz(R.ciu)}]. Cohen's h2 = ${f2(R.h2)}, ${pct(ctx.conf)} CI [${f2(R.h2l)}, ${f2(R.h2u)}].`
         }
       });
     }
