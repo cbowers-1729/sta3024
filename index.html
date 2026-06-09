@@ -694,6 +694,81 @@ c(x=x, n=n, phat=phat, z=zstat, p=ptst$p.value, cil=ptst$conf.int[1], ciu=ptst$c
         }
       });
     }
+  },
+
+  twoprop: {
+    label: "Two-sample proportions (Newcombe CI + Cohen's h, RR, OR)",
+    dropHint: "A 2-level outcome column and a 2-level grouping column. If pre-aggregated, also pick the counts column.",
+    methodNote: "<b>Effect sizes and intervals.</b> The difference in proportions uses the Newcombe hybrid-score interval (Method 10), which keeps good coverage at any <i>n</i>, unlike the Wald interval (Newcombe, 1998). Cohen's <i>h</i> is the arcsine difference 2\u00B7arcsin\u221A<i>p&#770;</i>\u2081 \u2212 2\u00B7arcsin\u221A<i>p&#770;</i>\u2082. The risk ratio and odds ratio use Wald log intervals (the method <i>epitools</i> and jamovi report by default). If any 2\u00D72 cell count is zero, a Haldane\u2013Anscombe correction (+0.5 to each cell) is applied to RR and OR so they stay defined (Haldane, 1956; Anscombe, 1956). All proportion effect sizes stay at the full confidence level.",
+    roles: [
+      { key:'outcome', kind:'group2', label:'Outcome — categorical, exactly 2 levels' },
+      { key:'group',   kind:'group2', label:'Group — categorical, exactly 2 levels' },
+      { key:'counts',  kind:'numeric', label:'Counts (optional) — frequency per cell, for pre-aggregated data', optional:true }
+    ],
+    params: [
+      { key:'success', type:'level', fromRole:'outcome', default:'last', label:'Success category — the outcome level counted as a success' }
+    ],
+    defaults: {},
+    resultKeys: ['x1','n1','p1','x2','n2','p2','z','p','diff','dlo','dup','h','hlo','hup','RR','rrlo','rrup','OR','orlo','orup','hac'],
+    rProgram: `
+o <- factor(outcome); g <- factor(group)
+gl <- levels(g); su <- success
+if (exists("counts")) {
+  w <- as.numeric(counts)
+  n1 <- sum(w[as.character(g)==gl[1]]); x1 <- sum(w[as.character(g)==gl[1] & as.character(o)==su])
+  n2 <- sum(w[as.character(g)==gl[2]]); x2 <- sum(w[as.character(g)==gl[2] & as.character(o)==su])
+} else {
+  n1 <- sum(as.character(g)==gl[1]); x1 <- sum(as.character(g)==gl[1] & as.character(o)==su)
+  n2 <- sum(as.character(g)==gl[2]); x2 <- sum(as.character(g)==gl[2] & as.character(o)==su)
+}
+p1 <- x1/n1; p2 <- x2/n2
+zc <- qnorm(1 - (1-conf)/2)
+ptst <- prop.test(c(x1, x2), c(n1, n2), correct = FALSE)
+zstat <- sign(p1 - p2) * sqrt(unname(ptst$statistic))
+wilson <- function(x, n){ ph <- x/n; cen <- (ph + zc^2/(2*n))/(1 + zc^2/n)
+  hw <- (zc/(1 + zc^2/n))*sqrt(ph*(1-ph)/n + zc^2/(4*n^2)); c(cen - hw, cen + hw) }
+w1 <- wilson(x1, n1); w2 <- wilson(x2, n2)
+diff <- p1 - p2
+dlo <- diff - sqrt((p1 - w1[1])^2 + (w2[2] - p2)^2)
+dup <- diff + sqrt((w1[2] - p1)^2 + (p2 - w2[1])^2)
+h <- 2*asin(sqrt(p1)) - 2*asin(sqrt(p2)); seh <- sqrt(1/n1 + 1/n2)
+hlo <- h - zc*seh; hup <- h + zc*seh
+a <- x1; b <- n1 - x1; cc <- x2; d <- n2 - x2
+hacorr <- (a == 0 || b == 0 || cc == 0 || d == 0)
+if (hacorr) { a <- a+0.5; b <- b+0.5; cc <- cc+0.5; d <- d+0.5 }
+RR <- (a/(a+b))/(cc/(cc+d)); selrr <- sqrt(1/a - 1/(a+b) + 1/cc - 1/(cc+d))
+rrlo <- exp(log(RR) - zc*selrr); rrup <- exp(log(RR) + zc*selrr)
+OR <- (a*d)/(b*cc); selor <- sqrt(1/a + 1/b + 1/cc + 1/d)
+orlo <- exp(log(OR) - zc*selor); orup <- exp(log(OR) + zc*selor)
+cat(sprintf("Comparison: %s vs %s; success = %s\\n\\n", gl[1], gl[2], su))
+print(ptst)
+cat(sprintf("\\np1 (%s) = %.4f [x=%d, n=%d];  p2 (%s) = %.4f [x=%d, n=%d]\\n", gl[1], p1, x1, n1, gl[2], p2, x2, n2))
+cat(sprintf("Difference p1 - p2 = %.4f, %.0f%% Newcombe CI [%.4f, %.4f]\\n", diff, conf*100, dlo, dup))
+cat(sprintf("Cohen's h = %.3f, %.0f%% CI [%.3f, %.3f]\\n", h, conf*100, hlo, hup))
+cat(sprintf("Risk ratio = %.3f, %.0f%% CI [%.3f, %.3f]\\n", RR, conf*100, rrlo, rrup))
+cat(sprintf("Odds ratio = %.3f, %.0f%% CI [%.3f, %.3f]\\n", OR, conf*100, orlo, orup))
+if (hacorr) cat("Note: a cell count was 0; Haldane-Anscombe +0.5 correction applied to RR and OR.\\n")
+c(x1=x1,n1=n1,p1=p1, x2=x2,n2=n2,p2=p2, z=zstat, p=ptst$p.value,
+  diff=diff, dlo=dlo, dup=dup, h=h, hlo=hlo, hup=hup,
+  RR=RR, rrlo=rrlo, rrup=rrup, OR=OR, orlo=orlo, orup=orup, hac=as.numeric(hacorr))`,
+    render(R, ctx){
+      const outcome=ctx.cols.outcome, group=ctx.cols.group, success=ctx.env.success;
+      const [g1,g2]=ctx.levels.group, ci=pct(ctx.conf);
+      const hacH = R.hac===1 ? ` A Haldane\u2013Anscombe correction (+0.5 per cell) was applied to RR and OR because a cell count was zero (Haldane, 1956; Anscombe, 1956).` : '';
+      const hacP = R.hac===1 ? ` A Haldane-Anscombe correction (+0.5 per cell) was applied to RR and OR because a cell count was zero (Haldane, 1956; Anscombe, 1956).` : '';
+      return buildAPA({
+        title:`Two-Proportion Test for ${outcome} (success = ${success}) by ${group}`,
+        headers:[{t:group},{t:'x',it:true,num:true},{t:'n',it:true,num:true},{t:'p\u0302',num:true}],
+        rows:[
+          [{t:g1},{t:R.x1,num:true},{t:R.n1,num:true},{t:nz(R.p1)}],
+          [{t:g2},{t:R.x2,num:true},{t:R.n2,num:true},{t:nz(R.p2)}]
+        ],
+        note:{
+          html:`<i>Note.</i> <i>z</i> = ${f2(R.z)}, <i>p</i> ${pFmt(R.p)}, two-sided. Difference (<i>p&#770;</i><sub>${g1}</sub> \u2212 <i>p&#770;</i><sub>${g2}</sub>) = ${nz(R.diff)}, ${ci} Newcombe CI [${nz(R.dlo)}, ${nz(R.dup)}]. Cohen's <i>h</i> = ${f2(R.h)}, ${ci} CI [${f2(R.hlo)}, ${f2(R.hup)}]. Risk ratio = ${f2(R.RR)}, ${ci} CI [${f2(R.rrlo)}, ${f2(R.rrup)}]. Odds ratio = ${f2(R.OR)}, ${ci} CI [${f2(R.orlo)}, ${f2(R.orup)}].${hacH}`,
+          plain:`Note. z = ${f2(R.z)}, p ${pFmt(R.p)}, two-sided. Difference (p-hat[${g1}] - p-hat[${g2}]) = ${nz(R.diff)}, ${ci} Newcombe CI [${nz(R.dlo)}, ${nz(R.dup)}]. Cohen's h = ${f2(R.h)}, ${ci} CI [${f2(R.hlo)}, ${f2(R.hup)}]. Risk ratio = ${f2(R.RR)}, ${ci} CI [${f2(R.rrlo)}, ${f2(R.rrup)}]. Odds ratio = ${f2(R.OR)}, ${ci} CI [${f2(R.orlo)}, ${f2(R.orup)}].${hacP}`
+        }
+      });
+    }
   }
 };
 
