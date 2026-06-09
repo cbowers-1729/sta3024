@@ -165,6 +165,11 @@ import { WebR } from 'https://webr.r-wasm.org/latest/webr.mjs';
 const nz = (x,d=2)=>{ const s=(x<0?'-':'')+Math.abs(x).toFixed(d); return s.replace(/^(-?)0\./,'$1.'); };
 const f2 = (x,d=2)=> Number(x).toFixed(d);
 const pct = (c)=> Math.round(Number(c)*100)+'%';
+// adaptive precision: 2 decimals normally, but keep ~2 significant figures for very small magnitudes
+const fsig = (x)=>{ const v=Number(x); if(!Number.isFinite(v)) return String(x);
+  if(v===0) return '0.00';
+  const a=Math.abs(v); if(a>=0.10) return v.toFixed(2);
+  const d=Math.min(8, 1-Math.floor(Math.log10(a))+1); return v.toFixed(d); };
 const pFmt = p => p < .001 ? '< .001' : '= ' + nz(p,3);
 
 /* ============================ APA table builder ============================ */
@@ -784,7 +789,7 @@ c(x1=x1,n1=n1,p1=p1, x2=x2,n2=n2,p2=p2, z=zstat, p=ptst$p.value,
       { key:'x0', type:'number', optional:true, default:'', label:'Predict at X = (optional) — leave blank to skip the prediction' }
     ],
     packages: ['ggplot2'],
-    plotCaptions: ['Regression with confidence and prediction bands', 'Residuals vs fitted (right axis: standardized)'],
+    plotCaptions: ['Regression with confidence and prediction bands', 'Residuals vs fitted (right axis: standardized)', 'Normal Q-Q of residuals'],
     defaults: { response:'bmd', predictor:'age' },
     resultKeys: ['b0','b0se','b0t','b0p','b0l','b0u','b1','b1se','b1t','b1p','b1l','b1u','f','df1','df2','fp','r2','adjr2','r','rl','ru','n','px','pcl','pcu','ppl','ppu'],
     rProgram: `
@@ -825,6 +830,8 @@ print(ggplot(rf, aes(fitted, resid)) +
   scale_y_continuous(sec.axis = sec_axis(~ . / sig, name = "Standardized residual (residual / s)", breaks = -3:3)) +
   theme_minimal(base_size = 13) +
   labs(x = "Fitted value", y = "Residual", title = "Residuals vs fitted (right axis: standardized)"))
+print(ggplot(rf, aes(sample = resid)) + stat_qq(alpha = .5, color = ACC) + stat_qq_line(color = ACC) +
+  theme_minimal(base_size = 13) + labs(x = "Theoretical quantile", y = "Residual", title = "Normal Q-Q of residuals"))
 c(b0=co[1,1], b0se=co[1,2], b0t=co[1,3], b0p=co[1,4], b0l=ci[1,1], b0u=ci[1,2],
   b1=co[2,1], b1se=co[2,2], b1t=co[2,3], b1p=co[2,4], b1l=ci[2,1], b1u=ci[2,2],
   f=fstat, df1=df1, df2=df2, fp=pf(fstat, df1, df2, lower.tail=FALSE),
@@ -844,8 +851,8 @@ c(b0=co[1,1], b0se=co[1,2], b0t=co[1,3], b0p=co[1,4], b0l=ci[1,1], b0u=ci[1,2],
         title:`Simple Linear Regression: ${resp} predicted from ${pred}`,
         headers:[{t:'Term'},{t:'B',it:true,num:true},{t:'SE',it:true,num:true},{t:'t',it:true,num:true},{t:'p',it:true,num:true},{t:`${ci} CI`,num:true}],
         rows:[
-          [{t:'(Intercept)'},{t:f2(R.b0),num:true},{t:f2(R.b0se),num:true},{t:f2(R.b0t),num:true},{t:pc(R.b0p),num:true},{t:`[${f2(R.b0l)}, ${f2(R.b0u)}]`,num:true}],
-          [{t:pred},{t:f2(R.b1),num:true},{t:f2(R.b1se),num:true},{t:f2(R.b1t),num:true},{t:pc(R.b1p),num:true},{t:`[${f2(R.b1l)}, ${f2(R.b1u)}]`,num:true}]
+          [{t:'(Intercept)'},{t:fsig(R.b0),num:true},{t:fsig(R.b0se),num:true},{t:f2(R.b0t),num:true},{t:pc(R.b0p),num:true},{t:`[${fsig(R.b0l)}, ${fsig(R.b0u)}]`,num:true}],
+          [{t:pred},{t:fsig(R.b1),num:true},{t:fsig(R.b1se),num:true},{t:f2(R.b1t),num:true},{t:pc(R.b1p),num:true},{t:`[${fsig(R.b1l)}, ${fsig(R.b1u)}]`,num:true}]
         ],
         note:{
           html:`<i>Note.</i> Overall model: <i>F</i>(${R.df1}, ${R.df2}) = ${f2(R.f)}, <i>p</i> ${pFmt(R.fp)}. <i>R</i><sup>2</sup> = ${nz(R.r2)}, adjusted <i>R</i><sup>2</sup> = ${nz(R.adjr2)}. Pearson <i>r</i> = ${nz(R.r)}, ${ci} CI [${nz(R.rl)}, ${nz(R.ru)}] (Fisher <i>z</i>). <i>n</i> = ${R.n}.${predH}`,
@@ -908,6 +915,8 @@ hl <- list(geom_hline(yintercept = 0, linetype = 2),
 rf <- data.frame(.fitted = fitted(fit), .resid = resid(fit))
 print(ggplot(rf, aes(.fitted, .resid)) + hl + geom_point(alpha=.5, color=ACC) + secy +
   theme_minimal(base_size=13) + labs(x="Fitted value", y="Residual", title="Residuals vs fitted (right axis: standardized)"))
+print(ggplot(rf, aes(sample = .resid)) + stat_qq(alpha=.5, color=ACC) + stat_qq_line(color=ACC) +
+  theme_minimal(base_size=13) + labs(x="Theoretical quantile", y="Residual", title="Normal Q-Q of residuals"))
 predcols <- setdiff(names(df), ".y")
 for (nm in predcols) {
   dd <- data.frame(xx = df[[nm]], .resid = resid(fit))
@@ -970,8 +979,8 @@ list(term = rownames(co), est = co[,1], se = co[,2], tval = co[,3], pval = co[,4
         const ci = pct(env.conf), pc = p => p < .001 ? '< .001' : nz(p,3);
         const term=R.term, est=R.est, se=R.se, tv=R.tval, pv=R.pval, lo=R.lo, hi=R.hi;
         const rows = term.map((tm,i)=>[
-          {t:String(tm)},{t:f2(est[i]),num:true},{t:f2(se[i]),num:true},
-          {t:f2(tv[i]),num:true},{t:pc(pv[i]),num:true},{t:`[${f2(lo[i])}, ${f2(hi[i])}]`,num:true}
+          {t:String(tm)},{t:fsig(est[i]),num:true},{t:fsig(se[i]),num:true},
+          {t:f2(tv[i]),num:true},{t:pc(pv[i]),num:true},{t:`[${fsig(lo[i])}, ${fsig(hi[i])}]`,num:true}
         ]);
         const out = buildAPA({
           title:`Multiple Linear Regression: ${cols.response} on ${predNames.join(', ')}${inter.length?' (with interaction)':''}`,
@@ -985,7 +994,7 @@ list(term = rownames(co), est = co[,1], se = co[,2], tval = co[,3], pval = co[,4
         document.getElementById('console').textContent = consoleText;
         document.getElementById('apa').innerHTML = out.screenHtml;
         lastResult = { plain: out.plain, htmlTable: out.copyHtml };
-        const caps = ['Residuals vs fitted (right axis: standardized)'].concat(predNames.map(n=>`Residuals vs ${n}`));
+        const caps = ['Residuals vs fitted (right axis: standardized)', 'Normal Q-Q of residuals'].concat(predNames.map(n=>`Residuals vs ${n}`));
         if(R.scat && R.scat[0]===1){
           const numName = predNames.find(n=> isNumericCol(columns[n]));
           const catName = predNames.find(n=> !isNumericCol(columns[n]));
