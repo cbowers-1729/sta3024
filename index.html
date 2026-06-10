@@ -1427,6 +1427,98 @@ list(p = res$p.value, mc = mc, k = k, N = N, w = w,
         setStatus(`Done. ${used} rows used${dropped?`, ${dropped} dropped for missing values`:''}.`);
       } finally { await shelter.purge(); }
     }
+  },
+
+  mcnemar: {
+    label: "McNemar's test (paired proportions)",
+    dropHint: "Two categorical columns with 2 levels each (e.g. pre and post status), one row per subject or matched pair. If pre-aggregated (one row per cell with a frequency), also pick the counts column.",
+    sided: true,
+    roles: [
+      { key:'pre',    kind:'group2',  label:'First measure (e.g. pre) — categorical, exactly 2 levels' },
+      { key:'post',   kind:'group2',  label:'Second measure (e.g. post) — categorical, exactly 2 levels' },
+      { key:'counts', kind:'numeric', label:'Counts (optional) — frequency per cell, for pre-aggregated data', optional:true }
+    ],
+    params: [
+      { key:'success', type:'level', fromRole:'pre', default:'last', label:'Success category — the level counted as a success in both columns' }
+    ],
+    defaults: {},
+    rProgram: `
+su <- success
+pr <- as.character(pre); po <- as.character(post)
+w <- if (exists("counts")) as.numeric(counts) else rep(1, length(pr))
+a  <- sum(w[pr == su & po == su]); b <- sum(w[pr == su & po != su])
+cc <- sum(w[pr != su & po == su]); d <- sum(w[pr != su & po != su])
+n <- a + b + cc + d
+pt <- (a + b)/n; ps <- (a + cc)/n; D <- pt - ps
+nd <- b + cc
+tab <- matrix(c(a, b, cc, d), 2, 2, byrow = TRUE,
+  dimnames = list(pre = c(su, paste0("not ", su)), post = c(su, paste0("not ", su))))
+cat("Paired 2x2 table (rows = first measure, columns = second measure):\\n"); print(tab)
+if (nd > 0) {
+  z <- (b - cc)/sqrt(nd)
+  chi2 <- z^2
+  pchi <- switch(alt, less = pnorm(z), greater = pnorm(z, lower.tail = FALSE), 2*pnorm(-abs(z)))
+  print(mcnemar.test(tab, correct = FALSE))
+  bt <- binom.test(b, nd, 0.5, alternative = alt)
+  cat("Exact binomial test on the discordant pairs:\\n"); print(bt)
+  pex <- bt$p.value
+} else { z <- 0; chi2 <- 0; pchi <- 1; pex <- 1; cat("No discordant pairs: the two measures never disagree; p = 1.\\n") }
+useex <- as.numeric(nd > 0 && nd < 25)
+zc <- qnorm(1 - (1 - conf)/2)
+wil <- function(x, nn){ ph <- x/nn; cen <- (ph + zc^2/(2*nn))/(1 + zc^2/nn)
+  hw <- (zc/(1 + zc^2/nn))*sqrt(ph*(1-ph)/nn + zc^2/(4*nn^2)); c(cen - hw, cen + hw) }
+wt <- wil(a + b, n); ws <- wil(a + cc, n)
+if ((a+b) == 0 || (cc+d) == 0 || (a+cc) == 0 || (b+d) == 0) { rho <- 0 } else {
+  A <- (a+b)*(cc+d)*(a+cc)*(b+d); B <- a*d - b*cc
+  Cv <- if (B > n/2) B - n/2 else if (B >= 0) 0 else B
+  rho <- Cv/sqrt(A) }
+DL <- D - sqrt(max(0, (pt - wt[1])^2 - 2*rho*(pt - wt[1])*(ws[2] - ps) + (ws[2] - ps)^2))
+DU <- D + sqrt(max(0, (ps - ws[1])^2 - 2*rho*(ps - ws[1])*(wt[2] - pt) + (wt[2] - pt)^2))
+if (nd > 0) {
+  th <- binom.test(b, nd, conf.level = conf)$conf.int
+  orv <- if (cc > 0) b/cc else Inf
+  orl <- th[1]/(1 - th[1]); oru <- if (th[2] < 1) th[2]/(1 - th[2]) else Inf
+} else { orv <- NaN; orl <- NaN; oru <- NaN }
+cat(sprintf("\\nDifference in proportions (first - second) = %.4f, %.0f%% Newcombe paired CI [%.4f, %.4f]\\n", D, conf*100, DL, DU))
+cat(sprintf("Paired (conditional) odds ratio b/c = %s, %.0f%% exact CI [%s, %s]\\n",
+    format(orv, digits=4), conf*100, format(orl, digits=4), format(oru, digits=4)))
+list(a=a, b=b, cc=cc, d=d, n=n, nd=nd, pt=pt, ps=ps, D=D, DL=DL, DU=DU,
+     chi2=chi2, z=z, pchi=pchi, pex=pex, useex=useex, orv=orv, orl=orl, oru=oru)`,
+    async run({env, cols, active, used, dropped}){
+      document.getElementById('edaOut').classList.add('hidden');
+      setStatus('Running in R…',{busy:true});
+      const shelter = await new webR.Shelter();
+      try{
+        const cap = await shelter.captureR(this.rProgram, { env });
+        const consoleText = cap.output.filter(o=>o.type==='stdout'||o.type==='stderr').map(o=>o.data).join('\n');
+        const R = rlistToObj(await cap.result.toJs());
+        const su = env.success, preName = cols.pre, postName = cols.post, ci = pct(env.conf);
+        const useex = R.useex[0]===1;
+        const headers=[{t:`${preName} \\ ${postName}`},{t:String(su),num:true},{t:`not ${su}`,num:true}];
+        const rows=[
+          [{t:String(su)},{t:R.a[0],num:true},{t:R.b[0],num:true}],
+          [{t:`not ${su}`},{t:R.cc[0],num:true},{t:R.d[0],num:true}]
+        ];
+        const testTxt = useex
+          ? `Exact binomial test on the ${R.nd[0]} discordant pairs, <i>p</i> ${pFmt(R.pex[0])}`
+          : `McNemar \u03C7\u00B2(1) = ${f2(R.chi2[0])}, <i>p</i> ${pFmt(R.pchi[0])}`;
+        const testTxtP = useex
+          ? `Exact binomial test on the ${R.nd[0]} discordant pairs, p ${pFmt(R.pex[0])}`
+          : `McNemar chi-square(1) = ${f2(R.chi2[0])}, p ${pFmt(R.pchi[0])}`;
+        const note = {
+          html:`<i>Note.</i> ${testTxt}, ${sidedTxt(env.alt)}; <i>n</i> = ${R.n[0]} pairs. Difference in the proportion of ${su} (${preName} \u2212 ${postName}) = ${nz(R.D[0])}, ${ci} Newcombe paired CI [${nz(R.DL[0])}, ${nz(R.DU[0])}]. Paired odds ratio (b/c) = ${fci(R.orv[0])}, ${ci} exact CI [${fci(R.orl[0])}, ${fci(R.oru[0])}].`,
+          plain:`Note. ${testTxtP}, ${sidedTxt(env.alt)}; n = ${R.n[0]} pairs. Difference in the proportion of ${su} (${preName} - ${postName}) = ${nz(R.D[0])}, ${ci} Newcombe paired CI [${nz(R.DL[0])}, ${nz(R.DU[0])}]. Paired odds ratio (b/c) = ${fci(R.orv[0])}, ${ci} exact CI [${fci(R.orl[0])}, ${fci(R.oru[0])}].`
+        };
+        const main = buildAPA({ title:`Paired Contingency Table and McNemar's Test of ${preName} vs ${postName} (success = ${su})`, headers, rows, note });
+        document.getElementById('console').textContent = consoleText;
+        document.getElementById('apa').innerHTML = main.screenHtml;
+        lastResult = { plain: main.plain, htmlTable: main.copyHtml };
+        document.getElementById('outStep').classList.remove('hidden');
+        const methodNote = `<b>Why these methods.</b> McNemar's test uses only the discordant pairs (b = ${R.b[0]}, c = ${R.cc[0]}) \u2014 pairs that changed \u2014 because concordant pairs carry no information about a shift. The \u03C7\u00B2 version is uncorrected, consistent with the tool's other \u03C7\u00B2 tests; when the discordant count is small (b + c &lt; 25) the tool reports the exact binomial test on the discordant pairs instead \u2014 the paired analogue of Fisher's exact. The difference CI is Newcombe's paired score method (method 10), which uses Wilson intervals for each marginal proportion with a continuity-corrected estimate of the within-pair correlation (Newcombe, 1998, <i>Statistics in Medicine</i>, 17, 2635\u20132650). The paired odds ratio b/c is the conditional ML estimate, with an exact CI from the binomial distribution of b given b + c.`;
+        const mn=document.getElementById('methodNote'); mn.innerHTML=methodNote; mn.classList.remove('hidden');
+        setStatus(`Done. ${used} rows used${dropped?`, ${dropped} dropped for missing values`:''}.`);
+      } finally { await shelter.purge(); }
+    }
   }
 };
 
@@ -1466,14 +1558,52 @@ const rolesContainer = document.getElementById('rolesContainer');
 const roleWarn = document.getElementById('roleWarn');
 const drop = document.getElementById('drop'), fileInput = document.getElementById('file');
 
-// Menu order follows STA3024_Layout_v14: descriptives, one-sample, two-sample,
-// chi-square (each exact test after its parent), regression, ANOVA, pairwise modules.
-const MENU_ORDER = ['eda','onesample','oneprop','paired','ind_means','brunner','twoprop',
-  'gof','emt_gof','chisq','fisher','linreg','multreg','welch_anova','pairprops','median_contrasts'];
-MENU_ORDER.concat(Object.keys(TESTS).filter(id=>!MENU_ORDER.includes(id))).forEach(id=>{
-  if(!TESTS[id]) return;
-  const o=document.createElement('option'); o.value=id; o.textContent=TESTS[id].label; testSel.appendChild(o);
+// Sectioned menu (per Dropdown_Menu_Layout): optgroups with course-facing names.
+// Option text here overrides each module's internal label.
+const MENU_SECTIONS = [
+  ['Exploratory Data Analysis', [
+    ['eda', 'Summary statistics + plots']]],
+  ['One-Sample Tests', [
+    ['onesample', 't-test for a mean'],
+    ['oneprop',   'z-test for a proportion']]],
+  ['Two-Sample Tests \u2014 Dependent', [
+    ['paired',  'Paired t-test for mean difference \u2014 repeated measures/matched pairs'],
+    ['mcnemar', "McNemar's test for difference between paired proportions"]]],
+  ['Two-Sample Tests \u2014 Independent', [
+    ['ind_means', "Welch's t-test for difference between means"],
+    ['brunner',   'Brunner-Munzel test for stochastic superiority \u2014 rank based'],
+    ['twoprop',   'z-test for difference between proportions']]],
+  ['Chi-square & Exact Tests', [
+    ['gof',     'Goodness of Fit (GOF)'],
+    ['emt_gof', 'Exact Multinomial Goodness of Fit (GOF, expected counts < 5)'],
+    ['chisq',   'Independence/Homogeneity'],
+    ['fisher',  "Fisher's exact test (independence, expected counts < 5)"]]],
+  ['Regression', [
+    ['linreg',  'Simple Linear Regression'],
+    ['multreg', 'Multiple Linear Regression']]],
+  ['ANOVA', [
+    ['welch_anova', "One-way Welch's ANOVA (Games-Howell all pairwise differences)"]]],
+  ['All Pairwise Differences (proportions & medians)', [
+    ['pairprops',        'Proportion differences (Newcombe)'],
+    ['median_contrasts', 'Median differences (Quantile Regression, \u03C4 = 0.5)']]]
+];
+const inMenu = new Set();
+MENU_SECTIONS.forEach(([secLabel, items])=>{
+  const og = document.createElement('optgroup'); og.label = secLabel;
+  items.forEach(([id, text])=>{
+    if(!TESTS[id]) return;
+    const o = document.createElement('option'); o.value = id; o.textContent = text;
+    og.appendChild(o); inMenu.add(id);
+  });
+  if(og.children.length) testSel.appendChild(og);
 });
+// safety net: any module not listed above still appears
+const leftovers = Object.keys(TESTS).filter(id=>!inMenu.has(id));
+if(leftovers.length){
+  const og = document.createElement('optgroup'); og.label = 'Other';
+  leftovers.forEach(id=>{ const o=document.createElement('option'); o.value=id; o.textContent=TESTS[id].label; og.appendChild(o); });
+  testSel.appendChild(og);
+}
 
 const edaPaletteEl = document.getElementById('edaPalette');
 Object.entries(PALETTES).forEach(([k,p])=>{ const o=document.createElement('option'); o.value=k; o.textContent=p.name; edaPaletteEl.appendChild(o); });
