@@ -342,7 +342,7 @@ const TESTS = {
   },
 
   ind_means: {
-    label: "Independent means — Welch's t test + Hedges' g*s",
+    label: "Two-sample - Independent means — Welch's t test + Hedges' g*s",
     dropHint: "Long/tidy data: a numeric outcome column and a 2-level grouping column.",
     sided: true,
     methodNote: "<b>Why these methods.</b> Welch's <i>t</i> is the default because the equal-variance assumption rarely holds and pretesting it does not help (Delacre, Lakens &amp; Leys, 2017). Hedges' <i>g*</i><sub>s</sub> pairs with it \u2014 the non-pooled SD with a small-sample correction \u2014 and is preferred over Cohen's <i>d</i> under unequal variances (Delacre et al., 2021).",
@@ -444,7 +444,7 @@ c(t=t.obs, df=df, p=tt$p.value, md=md, cil=tt$conf.int[1], ciu=tt$conf.int[2],
   },
 
   brunner: {
-    label: "Independent groups, rank-based — Brunner-Munzel test",
+    label: "Two Independent groups, rank-based — Brunner-Munzel test",
     dropHint: "Long/tidy data: a numeric outcome column and a 2-level grouping column.",
     methodNote: "<b>Why this test.</b> Brunner-Munzel is preferred over the Wilcoxon-Mann-Whitney test: MW's equal-distribution assumption fails under unequal spread or shape, where Brunner-Munzel keeps Type I error controlled with comparable power (Karch, 2021). It tests stochastic dominance \u2014 whether scores in one group tend to exceed the other \u2014 not a difference in medians (Divine et al., 2018).",
     roles: [
@@ -725,7 +725,7 @@ c(x=x, n=n, phat=phat, z=zstat, p=ptst$p.value, cil=ptst$conf.int[1], ciu=ptst$c
   },
 
   twoprop: {
-    label: "Two-sample proportions (Newcombe CI + Cohen's h, RR, OR)",
+    label: "Two-sample - Independent proportions (Newcombe CI + Cohen's h, RR, OR)",
     dropHint: "A 2-level outcome column and a 2-level grouping column. If pre-aggregated, also pick the counts column.",
     methodNote: "<b>Effect sizes and intervals.</b> The difference in proportions uses the Newcombe hybrid-score interval (Method 10), which keeps good coverage at any <i>n</i>, unlike the Wald interval (Newcombe, 1998). Cohen's <i>h</i> is the arcsine difference 2\u00B7arcsin\u221A<i>p&#770;</i>\u2081 \u2212 2\u00B7arcsin\u221A<i>p&#770;</i>\u2082. The risk ratio and odds ratio use Wald log intervals (the standard log-transform method, e.g. <i>epitools</i>' <code>method='wald'</code>). If any 2\u00D72 cell count is zero, a Haldane\u2013Anscombe correction (+0.5 to each cell) is applied to RR and OR so they stay defined (Haldane, 1956; Anscombe, 1956). All proportion effect sizes stay at the full confidence level.",
     roles: [
