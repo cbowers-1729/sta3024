@@ -1466,7 +1466,12 @@ const rolesContainer = document.getElementById('rolesContainer');
 const roleWarn = document.getElementById('roleWarn');
 const drop = document.getElementById('drop'), fileInput = document.getElementById('file');
 
-Object.keys(TESTS).forEach(id=>{
+// Menu order follows STA3024_Layout_v14: descriptives, one-sample, two-sample,
+// chi-square (each exact test after its parent), regression, ANOVA, pairwise modules.
+const MENU_ORDER = ['eda','onesample','oneprop','paired','ind_means','brunner','twoprop',
+  'gof','emt_gof','chisq','fisher','linreg','multreg','welch_anova','pairprops','median_contrasts'];
+MENU_ORDER.concat(Object.keys(TESTS).filter(id=>!MENU_ORDER.includes(id))).forEach(id=>{
+  if(!TESTS[id]) return;
   const o=document.createElement('option'); o.value=id; o.textContent=TESTS[id].label; testSel.appendChild(o);
 });
 
