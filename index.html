@@ -127,6 +127,15 @@
         <option value="0.99">99%</option>
       </select>
     </div>
+    <div id="altControls" class="hidden" style="margin-top:14px">
+      <label class="fld" for="altSel">Alternative hypothesis</label>
+      <select id="altSel" style="max-width:280px">
+        <option value="two.sided" selected>Two-sided (default)</option>
+        <option value="less">One-sided: less (left-tailed)</option>
+        <option value="greater">One-sided: greater (right-tailed)</option>
+      </select>
+      <div class="hint" style="margin-top:6px">The direction refers to the first-listed group or the test value (see the R console for R's exact statement). One-sided choices change the test's <i>p</i>-value and its own interval; effect-size intervals remain two-sided.</div>
+    </div>
     <div class="rolewarn" id="roleWarn"></div>
     <div class="run"><button class="run-btn" id="runBtn" disabled>Run analysis</button></div>
     <div class="status" id="status"></div>
@@ -335,6 +344,7 @@ const TESTS = {
   ind_means: {
     label: "Independent means — Welch's t test + Hedges' g*s",
     dropHint: "Long/tidy data: a numeric outcome column and a 2-level grouping column.",
+    sided: true,
     methodNote: "<b>Why these methods.</b> Welch's <i>t</i> is the default because the equal-variance assumption rarely holds and pretesting it does not help (Delacre, Lakens &amp; Leys, 2017). Hedges' <i>g*</i><sub>s</sub> pairs with it \u2014 the non-pooled SD with a small-sample correction \u2014 and is preferred over Cohen's <i>d</i> under unequal variances (Delacre et al., 2021).",
     roles: [
       { key:'resp', kind:'numeric', label:'Response — numeric outcome' },
@@ -357,7 +367,7 @@ g.star.ci <- function(x.bar.1, x.bar.2, s.1, s.2, n.1, n.2, alpha) {
 }
 d <- data.frame(resp = as.numeric(resp), grp = factor(grp))
 lv <- levels(d$grp)
-tt <- t.test(resp ~ grp, data = d, conf.level = conf)
+tt <- t.test(resp ~ grp, data = d, conf.level = conf, alternative = alt)
 g1 <- d$resp[d$grp == lv[1]]; g2 <- d$resp[d$grp == lv[2]]
 m1 <- mean(g1); s1 <- sd(g1); n1 <- length(g1)
 m2 <- mean(g2); s2 <- sd(g2); n2 <- length(g2)
@@ -379,8 +389,8 @@ c(t=unname(tt$statistic), df=unname(tt$parameter), p=tt$p.value,
           [{t:l2},{t:R.n2,num:true},{t:f2(R.m2),num:true},{t:f2(R.s2),num:true}]
         ],
         note:{
-          html:`<i>Note.</i> Welch's <i>t</i>(${f2(R.df)}) = ${f2(R.t)}, <i>p</i> ${pFmt(R.p)}, two-sided. Mean difference (${l1} &minus; ${l2}) = ${f2(R.md)}, ${pct(ctx.conf)} CI [${f2(R.cil)}, ${f2(R.ciu)}]. Hedges' <i>g*</i><sub>s</sub> = ${nz(R.g)}, ${pct(ctx.conf)} CI [${nz(R.gl)}, ${nz(R.gu)}].`,
-          plain:`Note. Welch's t(${f2(R.df)}) = ${f2(R.t)}, p ${pFmt(R.p)}, two-sided. Mean difference (${l1} - ${l2}) = ${f2(R.md)}, ${pct(ctx.conf)} CI [${f2(R.cil)}, ${f2(R.ciu)}]. Hedges' g*s = ${nz(R.g)}, ${pct(ctx.conf)} CI [${nz(R.gl)}, ${nz(R.gu)}].`
+          html:`<i>Note.</i> Welch's <i>t</i>(${f2(R.df)}) = ${f2(R.t)}, <i>p</i> ${pFmt(R.p)}, ${sidedTxt(ctx.env.alt)}. Mean difference (${l1} &minus; ${l2}) = ${f2(R.md)}, ${pct(ctx.conf)} CI [${fci(R.cil)}, ${fci(R.ciu)}]. Hedges' <i>g*</i><sub>s</sub> = ${nz(R.g)}, ${pct(ctx.conf)} CI [${nz(R.gl)}, ${nz(R.gu)}].`,
+          plain:`Note. Welch's t(${f2(R.df)}) = ${f2(R.t)}, p ${pFmt(R.p)}, ${sidedTxt(ctx.env.alt)}. Mean difference (${l1} - ${l2}) = ${f2(R.md)}, ${pct(ctx.conf)} CI [${fci(R.cil)}, ${fci(R.ciu)}]. Hedges' g*s = ${nz(R.g)}, ${pct(ctx.conf)} CI [${nz(R.gl)}, ${nz(R.gu)}].`
         }
       });
     }
@@ -389,6 +399,7 @@ c(t=unname(tt$statistic), df=unname(tt$parameter), p=tt$p.value,
   paired: {
     label: "Paired / repeated measures — paired t test + Hedges' g_z",
     dropHint: "Two numeric columns, one per condition (e.g. pre and post); each row is one subject or matched pair.",
+    sided: true,
     methodNote: "<b>Why this effect size.</b> Hedges' <i>g</i><sub>z</sub> standardizes the mean difference by the SD of the differences (the within-subject standardizer) and applies a small-sample correction, so it is less biased than the uncorrected Cohen's <i>d</i><sub>z</sub>, especially at small <i>n</i> (Lakens, 2013).",
     roles: [
       { key:'pre',  kind:'numeric', label:'First condition (e.g. pre) — numeric' },
@@ -400,7 +411,7 @@ c(t=unname(tt$statistic), df=unname(tt$parameter), p=tt$p.value,
 x <- as.numeric(pre); y <- as.numeric(post)
 dvec <- x - y
 n <- length(dvec); md <- mean(dvec); sdd <- sd(dvec)
-tt <- t.test(x, y, paired = TRUE, conf.level = conf)
+tt <- t.test(x, y, paired = TRUE, conf.level = conf, alternative = alt)
 t.obs <- unname(tt$statistic); df <- n - 1
 lim <- find_ncp_limits(t.obs, df, 1 - conf)
 dz <- md / sdd
@@ -425,8 +436,8 @@ c(t=t.obs, df=df, p=tt$p.value, md=md, cil=tt$conf.int[1], ciu=tt$conf.int[2],
           [{t:post},{t:R.n,num:true},{t:f2(R.mpost),num:true},{t:f2(R.sdpost),num:true}]
         ],
         note:{
-          html:`<i>Note.</i> Paired <i>t</i>(${f2(R.df)}) = ${f2(R.t)}, <i>p</i> ${pFmt(R.p)}, two-sided. Mean difference (${pre} &minus; ${post}) = ${f2(R.md)}, ${pct(ctx.conf)} CI [${f2(R.cil)}, ${f2(R.ciu)}]. Hedges' <i>g</i><sub>z</sub> = ${nz(R.g)}, ${pct(ctx.conf)} CI [${nz(R.gl)}, ${nz(R.gu)}].`,
-          plain:`Note. Paired t(${f2(R.df)}) = ${f2(R.t)}, p ${pFmt(R.p)}, two-sided. Mean difference (${pre} - ${post}) = ${f2(R.md)}, ${pct(ctx.conf)} CI [${f2(R.cil)}, ${f2(R.ciu)}]. Hedges' g_z = ${nz(R.g)}, ${pct(ctx.conf)} CI [${nz(R.gl)}, ${nz(R.gu)}].`
+          html:`<i>Note.</i> Paired <i>t</i>(${f2(R.df)}) = ${f2(R.t)}, <i>p</i> ${pFmt(R.p)}, ${sidedTxt(ctx.env.alt)}. Mean difference (${pre} &minus; ${post}) = ${f2(R.md)}, ${pct(ctx.conf)} CI [${fci(R.cil)}, ${fci(R.ciu)}]. Hedges' <i>g</i><sub>z</sub> = ${nz(R.g)}, ${pct(ctx.conf)} CI [${nz(R.gl)}, ${nz(R.gu)}].`,
+          plain:`Note. Paired t(${f2(R.df)}) = ${f2(R.t)}, p ${pFmt(R.p)}, ${sidedTxt(ctx.env.alt)}. Mean difference (${pre} - ${post}) = ${f2(R.md)}, ${pct(ctx.conf)} CI [${fci(R.cil)}, ${fci(R.ciu)}]. Hedges' g_z = ${nz(R.g)}, ${pct(ctx.conf)} CI [${nz(R.gl)}, ${nz(R.gu)}].`
         }
       });
     }
@@ -440,6 +451,7 @@ c(t=t.obs, df=df, p=tt$p.value, md=md, cil=tt$conf.int[1], ciu=tt$conf.int[2],
       { key:'resp', kind:'numeric', label:'Response — numeric outcome' },
       { key:'grp',  kind:'group2',  label:'Group — must have exactly 2 levels' }
     ],
+    sided: true,
     defaults: { resp:'bwt', grp:'smoke' },
     resultKeys: ['stat','df','p','phat','cil','ciu','n1','md1','n2','md2'],
     rProgram: `
@@ -455,10 +467,18 @@ vy <- sum((r[(nx+1):N] - ry - my + (ny+1)/2)^2)/(ny-1)
 se <- sqrt(vx/(nx*ny^2) + vy/(ny*nx^2))
 stat <- (pst - 0.5)/se
 df <- ((nx*vx + ny*vy)^2)/(((nx*vx)^2)/(nx-1) + ((ny*vy)^2)/(ny-1))
-p <- 2*pt(abs(stat), df, lower.tail = FALSE)
-ci <- pst + c(-1,1)*qt(1 - (1-conf)/2, df)*se
+p <- switch(alt,
+  "less"    = pt(stat, df),
+  "greater" = pt(stat, df, lower.tail = FALSE),
+  2*pt(abs(stat), df, lower.tail = FALSE))
+ci <- switch(alt,
+  "less"    = c(0, min(1, pst + qt(conf, df)*se)),
+  "greater" = c(max(0, pst - qt(conf, df)*se), 1),
+  pst + c(-1,1)*qt(1 - (1-conf)/2, df)*se)
 cat("\\n\\tBrunner-Munzel Test\\n\\n")
 cat("data:  resp by grp\\n")
+cat(sprintf("alternative hypothesis: relative effect P(X<Y)+.5*P(X=Y) is %s 0.5\\n",
+    switch(alt, "less" = "less than", "greater" = "greater than", "not equal to")))
 cat(sprintf("Brunner-Munzel statistic = %.4f, df = %.3f, p-value = %.5g\\n", stat, df, p))
 cat(sprintf("%.0f percent confidence interval: %.4f %.4f\\n", conf*100, ci[1], ci[2]))
 cat(sprintf("sample estimate, P(X<Y)+.5*P(X=Y) = %.4f\\n", pst))
@@ -475,8 +495,8 @@ c(stat=stat, df=df, p=p, phat=pst, cil=ci[1], ciu=ci[2],
           [{t:l2},{t:R.n2,num:true},{t:f2(R.md2),num:true}]
         ],
         note:{
-          html:`<i>Note.</i> Brunner-Munzel <i>W</i>(${f2(R.df)}) = ${f2(R.stat)}, <i>p</i> ${pFmt(R.p)}, two-sided. Relative effect <i>p&#770;</i> = ${nz(R.phat)}, ${pct(ctx.conf)} CI [${nz(R.cil)}, ${nz(R.ciu)}] \u2014 the estimated probability that a randomly chosen ${resp} from ${l2} exceeds one from ${l1} (.50 indicates no tendency). Mdn = median.`,
-          plain:`Note. Brunner-Munzel W(${f2(R.df)}) = ${f2(R.stat)}, p ${pFmt(R.p)}, two-sided. Relative effect p-hat = ${nz(R.phat)}, ${pct(ctx.conf)} CI [${nz(R.cil)}, ${nz(R.ciu)}] - the estimated probability that a randomly chosen ${resp} from ${l2} exceeds one from ${l1} (.50 indicates no tendency). Mdn = median.`
+          html:`<i>Note.</i> Brunner-Munzel <i>W</i>(${f2(R.df)}) = ${f2(R.stat)}, <i>p</i> ${pFmt(R.p)}, ${sidedTxt(ctx.env.alt)}. Relative effect <i>p&#770;</i> = ${nz(R.phat)}, ${pct(ctx.conf)} CI [${nz(R.cil)}, ${nz(R.ciu)}] \u2014 the estimated probability that a randomly chosen ${resp} from ${l2} exceeds one from ${l1} (.50 indicates no tendency). Mdn = median.`,
+          plain:`Note. Brunner-Munzel W(${f2(R.df)}) = ${f2(R.stat)}, p ${pFmt(R.p)}, ${sidedTxt(ctx.env.alt)}. Relative effect p-hat = ${nz(R.phat)}, ${pct(ctx.conf)} CI [${nz(R.cil)}, ${nz(R.ciu)}] - the estimated probability that a randomly chosen ${resp} from ${l2} exceeds one from ${l1} (.50 indicates no tendency). Mdn = median.`
         }
       });
     }
@@ -485,6 +505,7 @@ c(stat=stat, df=df, p=p, phat=pst, cil=ci[1], ciu=ci[2],
   onesample: {
     label: "One-sample t test (vs a hypothesized value) + Hedges' g",
     dropHint: "Any dataset: choose one numeric column and type the hypothesized mean to test against.",
+    sided: true,
     methodNote: "<b>Why this effect size.</b> Hedges' <i>g</i> applies a small-sample correction to Cohen's <i>d</i>, removing the slight upward bias of <i>d</i>, especially at small <i>n</i> (Lakens, 2013).",
     roles: [
       { key:'resp', kind:'numeric', label:'Variable — numeric' }
@@ -497,7 +518,7 @@ c(stat=stat, df=df, p=p, phat=pst, cil=ci[1], ciu=ci[2],
     rProgram: FIND_NCP + `
 x <- as.numeric(resp)
 n <- length(x); m <- mean(x); s <- sd(x)
-tt <- t.test(x, mu = mu0, conf.level = conf)
+tt <- t.test(x, mu = mu0, conf.level = conf, alternative = alt)
 t.obs <- unname(tt$statistic); df <- n - 1
 lim <- find_ncp_limits(t.obs, df, 1 - conf)
 dd <- (m - mu0)/s
@@ -520,8 +541,8 @@ c(t=t.obs, df=df, p=tt$p.value, m=m, s=s, n=n, mu0=mu0,
           [{t:resp},{t:R.n,num:true},{t:f2(R.m),num:true},{t:f2(R.s),num:true}]
         ],
         note:{
-          html:`<i>Note.</i> One-sample <i>t</i>(${f2(R.df)}) = ${f2(R.t)}, <i>p</i> ${pFmt(R.p)}, two-sided, test value = ${mu}. ${pct(ctx.conf)} CI for the mean [${f2(R.cil)}, ${f2(R.ciu)}]. Hedges' <i>g</i> = ${nz(R.g)}, ${pct(ctx.conf)} CI [${nz(R.gl)}, ${nz(R.gu)}].`,
-          plain:`Note. One-sample t(${f2(R.df)}) = ${f2(R.t)}, p ${pFmt(R.p)}, two-sided, test value = ${mu}. ${pct(ctx.conf)} CI for the mean [${f2(R.cil)}, ${f2(R.ciu)}]. Hedges' g = ${nz(R.g)}, ${pct(ctx.conf)} CI [${nz(R.gl)}, ${nz(R.gu)}].`
+          html:`<i>Note.</i> One-sample <i>t</i>(${f2(R.df)}) = ${f2(R.t)}, <i>p</i> ${pFmt(R.p)}, ${sidedTxt(ctx.env.alt)}, test value = ${mu}. ${pct(ctx.conf)} CI for the mean [${fci(R.cil)}, ${fci(R.ciu)}]. Hedges' <i>g</i> = ${nz(R.g)}, ${pct(ctx.conf)} CI [${nz(R.gl)}, ${nz(R.gu)}].`,
+          plain:`Note. One-sample t(${f2(R.df)}) = ${f2(R.t)}, p ${pFmt(R.p)}, ${sidedTxt(ctx.env.alt)}, test value = ${mu}. ${pct(ctx.conf)} CI for the mean [${fci(R.cil)}, ${fci(R.ciu)}]. Hedges' g = ${nz(R.g)}, ${pct(ctx.conf)} CI [${nz(R.gl)}, ${nz(R.gu)}].`
         }
       });
     }
@@ -660,6 +681,7 @@ list(chi2 = unname(ct$statistic), df = unname(ct$parameter), p = ct$p.value, N =
 
   oneprop: {
     label: "One-sample proportion (Wilson CI + score test)",
+    sided: true,
     dropHint: "A categorical column with exactly 2 levels. If pre-aggregated, also pick the counts column.",
     methodNote: "<b>Effect size and interval.</b> The Wilson score interval is used for the proportion (rather than the textbook Wald interval) because it keeps coverage near the nominal level even for small samples or proportions near 0 or 1 (Brown, Cai &amp; DasGupta, 2001). Cohen's <i>h</i><sub>2</sub> is the one-proportion arcsine index, 2\u00B7arcsin\u221A<i>p&#770;</i> \u2212 2\u00B7arcsin\u221A<i>p</i>\u2080, reported at the full confidence level.",
     roles: [
@@ -677,7 +699,7 @@ o <- factor(outcome)
 if (exists("counts")) {
   w <- as.numeric(counts); n <- sum(w); x <- sum(w[as.character(o) == success])
 } else { n <- length(o); x <- sum(as.character(o) == success) }
-ptst <- prop.test(x, n, p = p0, correct = FALSE, conf.level = conf)
+ptst <- prop.test(x, n, p = p0, correct = FALSE, conf.level = conf, alternative = alt)
 phat <- x / n
 zstat <- sign(phat - p0) * sqrt(unname(ptst$statistic))
 h2 <- 2*asin(sqrt(phat)) - 2*asin(sqrt(p0))
@@ -695,8 +717,8 @@ c(x=x, n=n, phat=phat, z=zstat, p=ptst$p.value, cil=ptst$conf.int[1], ciu=ptst$c
         headers:[{t:'Category'},{t:'x',it:true,num:true},{t:'n',it:true,num:true},{t:'p\u0302',num:true}],
         rows:[[{t:success},{t:R.x,num:true},{t:R.n,num:true},{t:nz(R.phat)}]],
         note:{
-          html:`<i>Note.</i> <i>z</i> = ${f2(R.z)}, <i>p</i> ${pFmt(R.p)}, two-sided, test value = ${nz(R.p0)}. Sample proportion <i>p&#770;</i> = ${nz(R.phat)}, ${pct(ctx.conf)} Wilson CI [${nz(R.cil)}, ${nz(R.ciu)}]. Cohen's <i>h</i><sub>2</sub> = ${f2(R.h2)}, ${pct(ctx.conf)} CI [${f2(R.h2l)}, ${f2(R.h2u)}].`,
-          plain:`Note. z = ${f2(R.z)}, p ${pFmt(R.p)}, two-sided, test value = ${nz(R.p0)}. Sample proportion p-hat = ${nz(R.phat)}, ${pct(ctx.conf)} Wilson CI [${nz(R.cil)}, ${nz(R.ciu)}]. Cohen's h2 = ${f2(R.h2)}, ${pct(ctx.conf)} CI [${f2(R.h2l)}, ${f2(R.h2u)}].`
+          html:`<i>Note.</i> <i>z</i> = ${f2(R.z)}, <i>p</i> ${pFmt(R.p)}, ${sidedTxt(ctx.env.alt)}, test value = ${nz(R.p0)}. Sample proportion <i>p&#770;</i> = ${nz(R.phat)}, ${pct(ctx.conf)} Wilson CI [${nz(R.cil)}, ${nz(R.ciu)}]. Cohen's <i>h</i><sub>2</sub> = ${f2(R.h2)}, ${pct(ctx.conf)} CI [${f2(R.h2l)}, ${f2(R.h2u)}].`,
+          plain:`Note. z = ${f2(R.z)}, p ${pFmt(R.p)}, ${sidedTxt(ctx.env.alt)}, test value = ${nz(R.p0)}. Sample proportion p-hat = ${nz(R.phat)}, ${pct(ctx.conf)} Wilson CI [${nz(R.cil)}, ${nz(R.ciu)}]. Cohen's h2 = ${f2(R.h2)}, ${pct(ctx.conf)} CI [${f2(R.h2l)}, ${f2(R.h2u)}].`
         }
       });
     }
@@ -715,6 +737,7 @@ c(x=x, n=n, phat=phat, z=zstat, p=ptst$p.value, cil=ptst$conf.int[1], ciu=ptst$c
       { key:'success', type:'level', fromRole:'outcome', default:'last', label:'Success category — the outcome level counted as a success' }
     ],
     defaults: {},
+    sided: true,
     resultKeys: ['x1','n1','p1','x2','n2','p2','z','p','diff','dlo','dup','h','hlo','hup','RR','rrlo','rrup','OR','orlo','orup','hac'],
     rProgram: `
 o <- factor(outcome); g <- factor(group)
@@ -729,14 +752,15 @@ if (exists("counts")) {
 }
 p1 <- x1/n1; p2 <- x2/n2
 zc <- qnorm(1 - (1-conf)/2)
-ptst <- prop.test(c(x1, x2), c(n1, n2), correct = FALSE)
+ptst <- prop.test(c(x1, x2), c(n1, n2), correct = FALSE, alternative = alt)
 zstat <- sign(p1 - p2) * sqrt(unname(ptst$statistic))
-wilson <- function(x, n){ ph <- x/n; cen <- (ph + zc^2/(2*n))/(1 + zc^2/n)
-  hw <- (zc/(1 + zc^2/n))*sqrt(ph*(1-ph)/n + zc^2/(4*n^2)); c(cen - hw, cen + hw) }
-w1 <- wilson(x1, n1); w2 <- wilson(x2, n2)
+wilson <- function(x, n, zz = zc){ ph <- x/n; cen <- (ph + zz^2/(2*n))/(1 + zz^2/n)
+  hw <- (zz/(1 + zz^2/n))*sqrt(ph*(1-ph)/n + zz^2/(4*n^2)); c(cen - hw, cen + hw) }
+zd <- if (alt == "two.sided") zc else qnorm(conf)
+w1 <- wilson(x1, n1, zd); w2 <- wilson(x2, n2, zd)
 diff <- p1 - p2
-dlo <- diff - sqrt((p1 - w1[1])^2 + (w2[2] - p2)^2)
-dup <- diff + sqrt((w1[2] - p1)^2 + (p2 - w2[1])^2)
+dlo <- if (alt == "less")    -1 else diff - sqrt((p1 - w1[1])^2 + (w2[2] - p2)^2)
+dup <- if (alt == "greater")  1 else diff + sqrt((w1[2] - p1)^2 + (p2 - w2[1])^2)
 h <- 2*asin(sqrt(p1)) - 2*asin(sqrt(p2)); seh <- sqrt(1/n1 + 1/n2)
 hlo <- h - zc*seh; hup <- h + zc*seh
 a <- x1; b <- n1 - x1; cc <- x2; d <- n2 - x2
@@ -770,8 +794,8 @@ c(x1=x1,n1=n1,p1=p1, x2=x2,n2=n2,p2=p2, z=zstat, p=ptst$p.value,
           [{t:g2},{t:R.x2,num:true},{t:R.n2,num:true},{t:nz(R.p2)}]
         ],
         note:{
-          html:`<i>Note.</i> <i>z</i> = ${f2(R.z)}, <i>p</i> ${pFmt(R.p)}, two-sided. Difference (<i>p&#770;</i><sub>${g1}</sub> \u2212 <i>p&#770;</i><sub>${g2}</sub>) = ${nz(R.diff)}, ${ci} Newcombe CI [${nz(R.dlo)}, ${nz(R.dup)}]. Cohen's <i>h</i> = ${f2(R.h)}, ${ci} CI [${f2(R.hlo)}, ${f2(R.hup)}]. Risk ratio = ${f2(R.RR)}, ${ci} CI [${f2(R.rrlo)}, ${f2(R.rrup)}]. Odds ratio = ${f2(R.OR)}, ${ci} CI [${f2(R.orlo)}, ${f2(R.orup)}].${hacH}`,
-          plain:`Note. z = ${f2(R.z)}, p ${pFmt(R.p)}, two-sided. Difference (p-hat[${g1}] - p-hat[${g2}]) = ${nz(R.diff)}, ${ci} Newcombe CI [${nz(R.dlo)}, ${nz(R.dup)}]. Cohen's h = ${f2(R.h)}, ${ci} CI [${f2(R.hlo)}, ${f2(R.hup)}]. Risk ratio = ${f2(R.RR)}, ${ci} CI [${f2(R.rrlo)}, ${f2(R.rrup)}]. Odds ratio = ${f2(R.OR)}, ${ci} CI [${f2(R.orlo)}, ${f2(R.orup)}].${hacP}`
+          html:`<i>Note.</i> <i>z</i> = ${f2(R.z)}, <i>p</i> ${pFmt(R.p)}, ${sidedTxt(ctx.env.alt)}. Difference (<i>p&#770;</i><sub>${g1}</sub> \u2212 <i>p&#770;</i><sub>${g2}</sub>) = ${nz(R.diff)}, ${ci} Newcombe CI [${nz(R.dlo)}, ${nz(R.dup)}]. Cohen's <i>h</i> = ${f2(R.h)}, ${ci} CI [${f2(R.hlo)}, ${f2(R.hup)}]. Risk ratio = ${f2(R.RR)}, ${ci} CI [${f2(R.rrlo)}, ${f2(R.rrup)}]. Odds ratio = ${f2(R.OR)}, ${ci} CI [${f2(R.orlo)}, ${f2(R.orup)}].${hacH}`,
+          plain:`Note. z = ${f2(R.z)}, p ${pFmt(R.p)}, ${sidedTxt(ctx.env.alt)}. Difference (p-hat[${g1}] - p-hat[${g2}]) = ${nz(R.diff)}, ${ci} Newcombe CI [${nz(R.dlo)}, ${nz(R.dup)}]. Cohen's h = ${f2(R.h)}, ${ci} CI [${f2(R.hlo)}, ${f2(R.hup)}]. Risk ratio = ${f2(R.RR)}, ${ci} CI [${f2(R.rrlo)}, ${f2(R.rrup)}]. Odds ratio = ${f2(R.OR)}, ${ci} CI [${f2(R.orlo)}, ${f2(R.orup)}].${hacP}`
         }
       });
     }
@@ -1268,6 +1292,7 @@ list(lv = lv, ns = ns, mds = mds, k = k, m = m,
 
   fisher: {
     label: "Fisher's exact test (independence, sparse tables)",
+    sided: true,
     dropHint: "Two categorical columns. If your data is pre-aggregated (one row per cell with a frequency), also pick the counts column. Use this when expected counts are small.",
     roles: [
       { key:'row',    kind:'categorical', label:'Row variable — categorical' },
@@ -1289,7 +1314,7 @@ if (exists("counts")) {
 } else { tab <- table(rf, cf) }
 nr <- nrow(tab); nc <- ncol(tab)
 exact_ok <- 1
-ft <- tryCatch(fisher.test(tab, conf.level = conf), error = function(e) NULL)
+ft <- tryCatch(fisher.test(tab, conf.level = conf, alternative = alt), error = function(e) NULL)
 if (is.null(ft)) { exact_ok <- 0; set.seed(20260507); ft <- fisher.test(tab, simulate.p.value = TRUE, B = 1e5) }
 print(ft)
 cat("\\nObserved counts:\\n"); print(tab)
@@ -1316,12 +1341,14 @@ list(p = ft$p.value, or = orv, orl = orl, oru = oru, is22 = is22, mc = 1 - exact
         const rows=[];
         for(let i=0;i<nr;i++){ rows.push([{t:String(rowlab[i])}].concat(collab.map((_,j)=>({t:obs[i*nc+j], num:true})))); }
         const is22 = R.is22[0]===1, mc = R.mc[0]===1;
-        const orH = is22 ? ` Odds ratio (conditional MLE) = ${f2(R.or[0])}, ${ci} exact CI [${f2(R.orl[0])}, ${f2(R.oru[0])}].` : '';
-        const orP = is22 ? ` Odds ratio (conditional MLE) = ${f2(R.or[0])}, ${ci} exact CI [${f2(R.orl[0])}, ${f2(R.oru[0])}].` : '';
+        const orH = is22 ? ` Odds ratio (conditional MLE) = ${f2(R.or[0])}, ${ci} exact CI [${fci(R.orl[0])}, ${fci(R.oru[0])}].` : '';
+        const orP = is22 ? ` Odds ratio (conditional MLE) = ${f2(R.or[0])}, ${ci} exact CI [${fci(R.orl[0])}, ${fci(R.oru[0])}].` : '';
         const mcH = mc ? ` The table was too large for exact enumeration; the p-value is from a seeded Monte Carlo simulation (100,000 tables) and is reproducible.` : '';
+        const sided = is22 ? sidedTxt(env.alt) : 'two-sided';
+        const sideCaveat = (!is22 && env.alt!=='two.sided') ? ` (a one-sided alternative applies only to 2\u00D72 tables; the two-sided test was run)` : '';
         const note = {
-          html:`<i>Note.</i> Fisher's exact test, <i>N</i> = ${R.N[0]}, <i>p</i> ${pFmt(R.p[0])}, two-sided.${orH}${mcH}`,
-          plain:`Note. Fisher's exact test, N = ${R.N[0]}, p ${pFmt(R.p[0])}, two-sided.${orP}${mcH}`
+          html:`<i>Note.</i> Fisher's exact test, <i>N</i> = ${R.N[0]}, <i>p</i> ${pFmt(R.p[0])}, ${sided}${sideCaveat}.${orH}${mcH}`,
+          plain:`Note. Fisher's exact test, N = ${R.N[0]}, p ${pFmt(R.p[0])}, ${sided}${sideCaveat}.${orP}${mcH}`
         };
         const main = buildAPA({ title:`Contingency Table and Fisher's Exact Test of ${rowName} by ${colName}`, headers, rows, note });
         document.getElementById('console').textContent = consoleText;
@@ -1446,8 +1473,15 @@ Object.keys(TESTS).forEach(id=>{
 const edaPaletteEl = document.getElementById('edaPalette');
 Object.entries(PALETTES).forEach(([k,p])=>{ const o=document.createElement('option'); o.value=k; o.textContent=p.name; edaPaletteEl.appendChild(o); });
 edaPaletteEl.value = 'forest';
-function updateEdaControls(){ document.getElementById('edaControls').classList.toggle('hidden', testSel.value!=='eda'); document.getElementById('confControls').classList.toggle('hidden', testSel.value==='eda'); }
+function updateEdaControls(){
+  const t = TESTS[testSel.value];
+  document.getElementById('edaControls').classList.toggle('hidden', testSel.value!=='eda');
+  document.getElementById('confControls').classList.toggle('hidden', testSel.value==='eda');
+  document.getElementById('altControls').classList.toggle('hidden', !(t && t.sided));
+}
 function currentConf(){ return Number(document.getElementById('confSel').value); }
+const fci = x => Number.isFinite(Number(x)) ? f2(x) : (Number(x)<0 ? '\u2212\u221E' : '\u221E');
+const sidedTxt = a => a==='less' ? 'one-sided (less)' : a==='greater' ? 'one-sided (greater)' : 'two-sided';
 edaPaletteEl.addEventListener('change', async ()=>{
   if(testSel.value==='eda' && lastEda){
     runBtn.disabled=true;
@@ -1651,6 +1685,7 @@ runBtn.addEventListener('click', async ()=>{
   });
   active.forEach(r=>{ env[r.key+'_name'] = cols[r.key]; });   // column names for R-side labels
   env.conf = currentConf();   // confidence level available to every module's R
+  env.alt = t.sided ? document.getElementById('altSel').value : 'two.sided';   // alternative hypothesis (modules that declare sided)
 
   // custom-run modules (EDA) manage their own output area
   if(t.run){
