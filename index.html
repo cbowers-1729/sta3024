@@ -1321,12 +1321,13 @@ if (inherits(res, "error")) {
   st <- a$Statistic
   # global (pooled-standing) relative effects per group, if available
   pe <- if (!is.null(res$Data.Info$Effect)) res$Data.Info$Effect else rep(NA, k)
-  om <- res$Overall$p.Value[1]; omstat <- res$Overall$Statistic[1]
-  omdf1 <- res$Overall$df1[1]; omdf2 <- res$Overall$df2[1]
+  peL <- if (!is.null(res$Data.Info$Lower)) res$Data.Info$Lower else rep(NA, k)
+  peU <- if (!is.null(res$Data.Info$Upper)) res$Data.Info$Upper else rep(NA, k)
+  om <- res$Overall$p.Value[1]; omq <- res$Overall$Quantile[1]
   cat("Pairwise rank-based contrasts (relative effects, Tukey-type all-pairwise)\\n")
   cat(sprintf("Groups: %s\\n", paste(lv, collapse=", ")))
-  cat(sprintf("BDM-type omnibus (ANOVA-type statistic): F = %.4f, df = (%.3f, %.3f), p = %.5g\\n\\n",
-      omstat, omdf1, omdf2, om))
+  cat(sprintf("BDM-type omnibus (MCTP, multivariate-t): critical quantile = %.4f, p = %.5g\\n\\n",
+      omq, om))
   for (r in seq_along(est)) {
     cat(sprintf("  %s vs %s: contrast = %.4f, %.0f%% sim. CI [%.4f, %.4f], stat = %.3f, p(adj) = %.5g\\n",
         lv[lo[r]], lv[hi[r]], est[r], conf*100, low[r], up[r], st[r], pv[r]))
@@ -1335,9 +1336,9 @@ if (inherits(res, "error")) {
   for (i in seq_len(k)) cat(sprintf("  %s: n = %d, p-hat(pooled) = %s\\n",
       lv[i], ns[i], ifelse(is.na(pe[i]), "NA", sprintf("%.4f", pe[i]))))
   list(failed = 0,
-       lv = lv, ns = ns, k = k, pe = pe,
+       lv = lv, ns = ns, k = k, pe = pe, peL = peL, peU = peU,
        hi = hi, lo = lo, est = est, low = low, up = up, st = st, pv = pv,
-       om = om, omstat = omstat, omdf1 = omdf1, omdf2 = omdf2)
+       om = om, omq = omq)
 }`,
     async run({env, cols, active, used, dropped}){
       document.getElementById('edaOut').classList.add('hidden');
@@ -1368,22 +1369,23 @@ if (inherits(res, "error")) {
         const grp=cols.grp, resp=cols.resp, ci=pct(env.conf);
         const k=R.k[0], lv=R.lv, m=R.est.length;
         const pcell = p => p < .001 ? '< .001' : nz(p,3);
-        // group pooled-standing effects table
+        // group pooled-standing effects table (with per-group simultaneous CIs)
         const rows = lv.map((g,i)=>[
           {t:String(g)}, {t:R.ns[i],num:true},
-          {t: (R.pe && Number.isFinite(Number(R.pe[i]))) ? nz(R.pe[i]) : '\u2014', num:true}
+          {t: (R.pe && Number.isFinite(Number(R.pe[i]))) ? nz(R.pe[i]) : '\u2014', num:true},
+          {t: (R.peL && Number.isFinite(Number(R.peL[i]))) ? `[${nz(R.peL[i])}, ${nz(R.peU[i])}]` : '\u2014'}
         ]);
         const note = {
-          html:`<i>Note.</i> Pairwise differences in relative effects (each group vs. the pooled sample), Tukey-type all-pairwise contrasts. BDM-type omnibus <i>F</i>(${f2(R.omdf1[0])}, ${f2(R.omdf2[0])}) = ${f2(R.omstat[0])}, <i>p</i> ${pFmt(R.om[0])}. ${ci} simultaneous CIs and adjusted <i>p</i>-values via the multivariate-<i>t</i> (Konietschke et&nbsp;al., 2012).`,
-          plain:`Note. Pairwise differences in relative effects (each group vs. the pooled sample), Tukey-type all-pairwise contrasts. BDM-type omnibus F(${f2(R.omdf1[0])}, ${f2(R.omdf2[0])}) = ${f2(R.omstat[0])}, p ${pFmt(R.om[0])}. ${ci} simultaneous CIs and adjusted p-values via the multivariate-t (Konietschke et al., 2012).`
+          html:`<i>Note.</i> Pairwise differences in relative effects (each group vs. the pooled sample), Tukey-type all-pairwise contrasts. BDM-type omnibus (MCTP): <i>p</i> ${pFmt(R.om[0])}. ${ci} simultaneous CIs and adjusted <i>p</i>-values via the multivariate-<i>t</i> (Konietschke et&nbsp;al., 2012).`,
+          plain:`Note. Pairwise differences in relative effects (each group vs. the pooled sample), Tukey-type all-pairwise contrasts. BDM-type omnibus (MCTP): p ${pFmt(R.om[0])}. ${ci} simultaneous CIs and adjusted p-values via the multivariate-t (Konietschke et al., 2012).`
         };
         const main = buildAPA({
           title:`Relative Effects and Pairwise Rank-Based Contrasts for ${resp} by ${grp}`,
-          headers:[{t:grp},{t:'n',it:true,num:true},{t:'p\u0302 (pooled)',num:true}],
+          headers:[{t:grp},{t:'n',it:true,num:true},{t:'p\u0302 (pooled)',num:true},{t:`${ci} CI`,num:true}],
           rows, note
         });
         // omnibus subordinate line (explicitly non-gating)
-        let omLine = `<p class="tnum" style="margin-top:14px;margin-bottom:2px"><b>Omnibus (subordinate, non-gating):</b> BDM-type ANOVA statistic <i>F</i>(${f2(R.omdf1[0])}, ${f2(R.omdf2[0])}) = ${f2(R.omstat[0])}, <i>p</i> ${pFmt(R.om[0])}.</p>`;
+        let omLine = `<p class="tnum" style="margin-top:14px;margin-bottom:2px"><b>Omnibus (subordinate, non-gating):</b> BDM-type relative-effects test (MCTP, multivariate-<i>t</i>), <i>p</i> ${pFmt(R.om[0])}.</p>`;
         // pairwise contrast table
         let ct = `<p class="tnum" style="margin-top:14px">Pairwise contrasts of relative effects (${ci} simultaneous CIs)</p><table class="apa-tbl"><thead><tr><th>Comparison</th><th class="num">Contrast</th><th class="num">${ci} CI</th><th class="num"><span style="font-style:italic">t</span></th><th class="num"><span style="font-style:italic">p</span> (adj.)</th></tr></thead><tbody>`;
         for(let r=0;r<m;r++){
@@ -1394,7 +1396,7 @@ if (inherits(res, "error")) {
         document.getElementById('apa').innerHTML = main.screenHtml + omLine + ct;
         lastResult = { plain: main.plain, htmlTable: main.copyHtml };
         document.getElementById('outStep').classList.remove('hidden');
-        const methodNote = `<b>Why this analysis.</b> This is the <i>k</i>-group rank-based analogue of the Brunner-Munzel test, and the nonparametric counterpart to Welch's ANOVA \u2014 it assumes neither equal variances nor equal distribution shapes, and it is valid for ordinal as well as interval/ratio outcomes. The <b>omnibus</b> is the Brunner-Dette-Munk ANOVA-type statistic, testing <i>H</i>\u2080: all groups have equal relative effects (each group is equally likely to rank high or low against the pooled sample). It is reported as a subordinate, <i>non-gating</i> summary: the pairwise contrasts below control the familywise error rate on their own and are run unconditionally (Sauder &amp; DeMars, 2019). Each <b>pairwise contrast</b> is a difference in relative effects \u2014 a positive value means the second-named group tends to rank above the first in the combined sample \u2014 with simultaneous confidence intervals and multiplicity-adjusted <i>p</i>-values computed jointly from the multivariate <i>t</i>-distribution (the single-step MCTP of Konietschke, Hothorn &amp; Brunner, 2012), the rank-based parallel to Games-Howell. Because the omnibus and the contrasts are both framed on relative effects, they can occasionally disagree (a significant omnibus with no single significant contrast signals a diffuse effect spread across groups); this is informative, not contradictory. Brunner, Dette &amp; Munk (1997); Brunner &amp; Munzel (2000).`;
+        const methodNote = `<b>Why this analysis.</b> This is the <i>k</i>-group rank-based analogue of the Brunner-Munzel test, and the nonparametric counterpart to Welch's ANOVA \u2014 it assumes neither equal variances nor equal distribution shapes, and it is valid for ordinal as well as interval/ratio outcomes. The <b>omnibus</b> tests <i>H</i>\u2080: all groups have equal relative effects (each group is equally likely to rank high or low against the pooled sample), in the spirit of Brunner, Dette &amp; Munk (1997); here it is the global multivariate-<i>t</i> test that accompanies the MCTP. It is reported as a subordinate, <i>non-gating</i> summary: the pairwise contrasts below control the familywise error rate on their own and are run unconditionally (Sauder &amp; DeMars, 2019). Each <b>pairwise contrast</b> is a difference in relative effects \u2014 a positive value means the second-named group tends to rank above the first in the combined sample \u2014 with simultaneous confidence intervals and multiplicity-adjusted <i>p</i>-values computed jointly from the multivariate <i>t</i>-distribution (the single-step MCTP of Konietschke, Hothorn &amp; Brunner, 2012), the rank-based parallel to Games-Howell. Because the omnibus and the contrasts are both framed on relative effects, they can occasionally disagree (a significant omnibus with no single significant contrast signals a diffuse effect spread across groups); this is informative, not contradictory. Brunner, Dette &amp; Munk (1997); Brunner &amp; Munzel (2000).`;
         const mn=document.getElementById('methodNote'); mn.innerHTML=methodNote; mn.classList.remove('hidden');
         setStatus(`Done. ${used} rows used${dropped?`, ${dropped} dropped for missing values`:''}.`);
       } finally { await shelter.purge(); }
