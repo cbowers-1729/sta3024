@@ -1290,6 +1290,117 @@ list(lv = lv, ns = ns, mds = mds, k = k, m = m,
     }
   },
 
+  rank_contrasts: {
+    label: "Group standing in the combined sample (rank-based, MCTP) \u2014 3+ groups",
+    dropHint: "Long/tidy data: a numeric or ordinal outcome and a grouping column with 3 or more levels. (For exactly 2 groups, use the Brunner-Munzel test.)",
+    roles: [
+      { key:'resp', kind:'numeric',     label:'Response \u2014 numeric or ordinal outcome' },
+      { key:'grp',  kind:'group_anova', label:'Group \u2014 3 to 12 levels' }
+    ],
+    packages: ['mvtnorm','multcomp','survival','nparcomp'],
+    defaults: { resp:'weight', grp:'feed' },
+    rProgram: `
+suppressMessages(library(nparcomp))
+d <- data.frame(y = as.numeric(resp), g = factor(grp))
+lv <- levels(d$g); k <- length(lv)
+ns <- as.numeric(tapply(d$y, d$g, length))
+cl <- (2*conf - 1)  # mctp 'conf.level' is the simultaneous coverage; pass user level directly below
+res <- tryCatch(
+  mctp(y ~ g, data = d, type = "Tukey", conf.level = conf, info = FALSE, asy.method = "mult.t"),
+  error = function(e) e)
+if (inherits(res, "error")) {
+  sep <- grepl("chkcorr|correlation matrix|missing value", conditionMessage(res))
+  cat("MCTP_ERROR\\n"); cat(conditionMessage(res), "\\n")
+  list(failed = 1, sep = as.numeric(sep))
+} else {
+  a <- res$Analysis
+  # contrast row names look like "2 - 1" (level indices); map to level labels
+  idx <- rownames(a)
+  hi <- as.integer(sub(" -.*", "", idx)); lo <- as.integer(sub(".*- ", "", idx))
+  est <- a$Estimator; low <- a$Lower; up <- a$Upper; pv <- a$p.Value
+  st <- a$Statistic
+  # global (pooled-standing) relative effects per group, if available
+  pe <- if (!is.null(res$Data.Info$Effect)) res$Data.Info$Effect else rep(NA, k)
+  om <- res$Overall$p.Value[1]; omstat <- res$Overall$Statistic[1]
+  omdf1 <- res$Overall$df1[1]; omdf2 <- res$Overall$df2[1]
+  cat("Pairwise rank-based contrasts (relative effects, Tukey-type all-pairwise)\\n")
+  cat(sprintf("Groups: %s\\n", paste(lv, collapse=", ")))
+  cat(sprintf("BDM-type omnibus (ANOVA-type statistic): F = %.4f, df = (%.3f, %.3f), p = %.5g\\n\\n",
+      omstat, omdf1, omdf2, om))
+  for (r in seq_along(est)) {
+    cat(sprintf("  %s vs %s: contrast = %.4f, %.0f%% sim. CI [%.4f, %.4f], stat = %.3f, p(adj) = %.5g\\n",
+        lv[lo[r]], lv[hi[r]], est[r], conf*100, low[r], up[r], st[r], pv[r]))
+  }
+  cat("\\nRelative effect of each group vs the pooled sample:\\n")
+  for (i in seq_len(k)) cat(sprintf("  %s: n = %d, p-hat(pooled) = %s\\n",
+      lv[i], ns[i], ifelse(is.na(pe[i]), "NA", sprintf("%.4f", pe[i]))))
+  list(failed = 0,
+       lv = lv, ns = ns, k = k, pe = pe,
+       hi = hi, lo = lo, est = est, low = low, up = up, st = st, pv = pv,
+       om = om, omstat = omstat, omdf1 = omdf1, omdf2 = omdf2)
+}`,
+    async run({env, cols, active, used, dropped}){
+      document.getElementById('edaOut').classList.add('hidden');
+      for(const p of this.packages){
+        if(!installed.has(p)){ setStatus(`Installing ${p} (one-time download)\u2026`,{busy:true}); await webR.installPackages([p]); installed.add(p); }
+      }
+      setStatus('Running in R\u2026',{busy:true});
+      const shelter = await new webR.Shelter();
+      try{
+        const cap = await shelter.captureR(this.rProgram, { env });
+        const consoleText = cap.output.filter(o=>o.type==='stdout'||o.type==='stderr').map(o=>o.data).join('\n');
+        const R = rlistToObj(await cap.result.toJs());
+        document.getElementById('console').textContent = consoleText;
+        if(R.failed && R.failed[0]===1){
+          const sep = R.sep && R.sep[0]===1;
+          const msg = sep
+            ? `The groups are perfectly (or almost perfectly) separated, so the relative-effect variances collapse to zero and the simultaneous intervals are undefined. The ordering itself is unambiguous \u2014 each group's values lie entirely above or below the others \u2014 but the MCTP cannot place a confidence interval on a boundary effect. Consider reporting the separation descriptively, or use the pairwise median-difference module for a dimensioned comparison.`
+            : `The rank-based contrast could not be computed on these data. See the R console for the underlying message.`;
+          document.getElementById('apa').innerHTML = `<div class="apa-note" style="padding:6px 2px"><i>Note.</i> ${msg}</div>`;
+          lastResult = { plain: 'MCTP could not be computed (see console).', htmlTable: '' };
+          document.getElementById('outStep').classList.remove('hidden');
+          const mn=document.getElementById('methodNote');
+          mn.innerHTML = `<b>About this analysis.</b> The multiple contrast test procedure (MCTP) estimates all pairwise differences in relative effects with familywise-error-controlled simultaneous intervals (Konietschke, Hothorn &amp; Brunner, 2012). It requires positive within-group variability; perfect separation is the one case it cannot interval-estimate.`;
+          mn.classList.remove('hidden');
+          setStatus('Done, with a note (see results).');
+          return;
+        }
+        const grp=cols.grp, resp=cols.resp, ci=pct(env.conf);
+        const k=R.k[0], lv=R.lv, m=R.est.length;
+        const pcell = p => p < .001 ? '< .001' : nz(p,3);
+        // group pooled-standing effects table
+        const rows = lv.map((g,i)=>[
+          {t:String(g)}, {t:R.ns[i],num:true},
+          {t: (R.pe && Number.isFinite(Number(R.pe[i]))) ? nz(R.pe[i]) : '\u2014', num:true}
+        ]);
+        const note = {
+          html:`<i>Note.</i> Pairwise differences in relative effects (each group vs. the pooled sample), Tukey-type all-pairwise contrasts. BDM-type omnibus <i>F</i>(${f2(R.omdf1[0])}, ${f2(R.omdf2[0])}) = ${f2(R.omstat[0])}, <i>p</i> ${pFmt(R.om[0])}. ${ci} simultaneous CIs and adjusted <i>p</i>-values via the multivariate-<i>t</i> (Konietschke et&nbsp;al., 2012).`,
+          plain:`Note. Pairwise differences in relative effects (each group vs. the pooled sample), Tukey-type all-pairwise contrasts. BDM-type omnibus F(${f2(R.omdf1[0])}, ${f2(R.omdf2[0])}) = ${f2(R.omstat[0])}, p ${pFmt(R.om[0])}. ${ci} simultaneous CIs and adjusted p-values via the multivariate-t (Konietschke et al., 2012).`
+        };
+        const main = buildAPA({
+          title:`Relative Effects and Pairwise Rank-Based Contrasts for ${resp} by ${grp}`,
+          headers:[{t:grp},{t:'n',it:true,num:true},{t:'p\u0302 (pooled)',num:true}],
+          rows, note
+        });
+        // omnibus subordinate line (explicitly non-gating)
+        let omLine = `<p class="tnum" style="margin-top:14px;margin-bottom:2px"><b>Omnibus (subordinate, non-gating):</b> BDM-type ANOVA statistic <i>F</i>(${f2(R.omdf1[0])}, ${f2(R.omdf2[0])}) = ${f2(R.omstat[0])}, <i>p</i> ${pFmt(R.om[0])}.</p>`;
+        // pairwise contrast table
+        let ct = `<p class="tnum" style="margin-top:14px">Pairwise contrasts of relative effects (${ci} simultaneous CIs)</p><table class="apa-tbl"><thead><tr><th>Comparison</th><th class="num">Contrast</th><th class="num">${ci} CI</th><th class="num"><span style="font-style:italic">t</span></th><th class="num"><span style="font-style:italic">p</span> (adj.)</th></tr></thead><tbody>`;
+        for(let r=0;r<m;r++){
+          const loName = String(lv[R.lo[r]-1]); const hiName = String(lv[R.hi[r]-1]);
+          ct += `<tr><td>${loName} \u2192 ${hiName}</td><td class="num">${f2(R.est[r])}</td><td class="num">[${f2(R.low[r])}, ${f2(R.up[r])}]</td><td class="num">${f2(R.st[r])}</td><td class="num">${pcell(R.pv[r])}</td></tr>`;
+        }
+        ct += `</tbody></table>`;
+        document.getElementById('apa').innerHTML = main.screenHtml + omLine + ct;
+        lastResult = { plain: main.plain, htmlTable: main.copyHtml };
+        document.getElementById('outStep').classList.remove('hidden');
+        const methodNote = `<b>Why this analysis.</b> This is the <i>k</i>-group rank-based analogue of the Brunner-Munzel test, and the nonparametric counterpart to Welch's ANOVA \u2014 it assumes neither equal variances nor equal distribution shapes, and it is valid for ordinal as well as interval/ratio outcomes. The <b>omnibus</b> is the Brunner-Dette-Munk ANOVA-type statistic, testing <i>H</i>\u2080: all groups have equal relative effects (each group is equally likely to rank high or low against the pooled sample). It is reported as a subordinate, <i>non-gating</i> summary: the pairwise contrasts below control the familywise error rate on their own and are run unconditionally (Sauder &amp; DeMars, 2019). Each <b>pairwise contrast</b> is a difference in relative effects \u2014 a positive value means the second-named group tends to rank above the first in the combined sample \u2014 with simultaneous confidence intervals and multiplicity-adjusted <i>p</i>-values computed jointly from the multivariate <i>t</i>-distribution (the single-step MCTP of Konietschke, Hothorn &amp; Brunner, 2012), the rank-based parallel to Games-Howell. Because the omnibus and the contrasts are both framed on relative effects, they can occasionally disagree (a significant omnibus with no single significant contrast signals a diffuse effect spread across groups); this is informative, not contradictory. Brunner, Dette &amp; Munk (1997); Brunner &amp; Munzel (2000).`;
+        const mn=document.getElementById('methodNote'); mn.innerHTML=methodNote; mn.classList.remove('hidden');
+        setStatus(`Done. ${used} rows used${dropped?`, ${dropped} dropped for missing values`:''}.`);
+      } finally { await shelter.purge(); }
+    }
+  },
+
   fisher: {
     label: "Fisher's exact test (independence, sparse tables)",
     sided: true,
@@ -1583,9 +1694,10 @@ const MENU_SECTIONS = [
     ['multreg', 'Multiple Linear Regression']]],
   ['ANOVA', [
     ['welch_anova', "One-way Welch's ANOVA (Games-Howell all pairwise differences)"]]],
-  ['All Pairwise Differences (proportions & medians)', [
+  ['All Pairwise Differences (proportions, medians & ranks)', [
     ['pairprops',        'Proportion differences (Newcombe)'],
-    ['median_contrasts', 'Median differences (Quantile Regression, \u03C4 = 0.5)']]]
+    ['median_contrasts', 'Median differences (Quantile Regression, \u03C4 = 0.5)'],
+    ['rank_contrasts',   'Group standing in the combined sample (rank-based, MCTP)']]]
 ];
 const inMenu = new Set();
 MENU_SECTIONS.forEach(([secLabel, items])=>{
