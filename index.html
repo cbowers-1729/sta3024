@@ -179,6 +179,13 @@ const fsig = (x)=>{ const v=Number(x); if(!Number.isFinite(v)) return String(x);
   if(v===0) return '0.00';
   const a=Math.abs(v); if(a>=0.10) return v.toFixed(2);
   const d=Math.min(8, 1-Math.floor(Math.log10(a))+1); return v.toFixed(d); };
+// adaptive proportion/effect formatter: strips leading zero, keeps ~2 sig figs when small
+const nzsig = (x)=>{ const v=Number(x); if(!Number.isFinite(v)) return String(x);
+  if(v===0) return '.00';
+  const a=Math.abs(v);
+  let s; if(a>=0.10) s=a.toFixed(2);
+  else { const d=Math.min(8, -Math.floor(Math.log10(a))+1); s=a.toFixed(d); }
+  return (v<0?'-':'') + s.replace(/^0/,''); };
 const pFmt = p => p < .001 ? '< .001' : '= ' + nz(p,3);
 
 /* ============================ APA table builder ============================ */
@@ -873,7 +880,7 @@ list(lv = lv, xs = xs, ns = ns, ps = ps, k = k, m = m,
         const k=R.k[0], m=R.m[0], lv=R.lv;
         const pcell = p => p < .001 ? '< .001' : nz(p,3);
         const rows = lv.map((g,i)=>[
-          {t:String(g)},{t:R.xs[i],num:true},{t:R.ns[i],num:true},{t:nz(R.ps[i])}
+          {t:String(g)},{t:R.xs[i],num:true},{t:R.ns[i],num:true},{t:nzsig(R.ps[i])}
         ]);
         const note = {
           html:`<i>Note.</i> All pairwise differences in the proportion of ${outcome} = ${success}. ${m} comparisons: Holm-adjusted <i>p</i>-values; ${ci} Bonferroni-Newcombe simultaneous CIs.`,
@@ -886,7 +893,7 @@ list(lv = lv, xs = xs, ns = ns, ps = ps, k = k, m = m,
         });
         let pt = `<p class="tnum" style="margin-top:18px">Pairwise proportion differences (${ci} simultaneous CIs)</p><table class="apa-tbl"><thead><tr><th>Comparison</th><th class="num">Diff.</th><th class="num">${ci} CI</th><th class="num"><span style="font-style:italic">z</span></th><th class="num"><span style="font-style:italic">p</span> (Holm)</th></tr></thead><tbody>`;
         for(let r=0;r<m;r++){
-          pt += `<tr><td>${String(R.gi[r])} \u2212 ${String(R.gj[r])}</td><td class="num">${nz(R.dv[r])}</td><td class="num">[${nz(R.lo[r])}, ${nz(R.hi[r])}]</td><td class="num">${f2(R.zv[r])}</td><td class="num">${pcell(R.ph[r])}</td></tr>`;
+          pt += `<tr><td>${String(R.gi[r])} \u2212 ${String(R.gj[r])}</td><td class="num">${nzsig(R.dv[r])}</td><td class="num">[${nzsig(R.lo[r])}, ${nzsig(R.hi[r])}]</td><td class="num">${f2(R.zv[r])}</td><td class="num">${pcell(R.ph[r])}</td></tr>`;
         }
         pt += `</tbody></table>`;
         const omLine = `<p class="tnum" style="margin-top:14px;margin-bottom:2px"><b>Omnibus (subordinate, non-gating):</b> \u03C7\u00B2 test of homogeneity, <i>\u03C7</i>\u00B2(${R.omdf[0]}) = ${f2(R.omstat[0])}, <i>p</i> ${pFmt(R.omp[0])}.</p>`;
