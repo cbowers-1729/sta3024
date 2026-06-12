@@ -1271,8 +1271,8 @@ if (inherits(oman, "error")) {
   cat("\\nOmnibus (anova.rq) could not be computed on these data.\\n")
 } else {
   tt <- oman$table
-  omF <- tt$F[1]; omdf1 <- tt$ndf[1]; omdf2 <- tt$ddf[1]; omp <- tt$pvalue[1]
-  cat(sprintf("\\nOmnibus median-equality test (anova.rq, Wald): F = %.4f, df = (%d, %d), p = %.5g\\n",
+  omF <- tt$Tn[1]; omdf1 <- tt$ndf[1]; omdf2 <- tt$ddf[1]; omp <- tt$pvalue[1]
+  cat(sprintf("\\nOmnibus median-equality test (anova.rq, Wald): Tn = %.4f, df = (%d, %d), p = %.5g\\n",
       omF, omdf1, omdf2, omp))
 }
 cat("\\nGroup medians:\\n")
@@ -1311,7 +1311,7 @@ list(lv = lv, ns = ns, mds = mds, k = k, m = m,
         mt += `</tbody></table>`;
         const omAvail = R.omp && Number.isFinite(Number(R.omp[0]));
         const omLine = omAvail
-          ? `<p class="tnum" style="margin-top:14px;margin-bottom:2px"><b>Omnibus (subordinate, non-gating):</b> median-equality test (<span style="font-style:italic">anova.rq</span>, Wald), <i>F</i>(${R.omdf1[0]}, ${R.omdf2[0]}) = ${f2(R.omF[0])}, <i>p</i> ${pFmt(R.omp[0])}.</p>`
+          ? `<p class="tnum" style="margin-top:14px;margin-bottom:2px"><b>Omnibus (subordinate, non-gating):</b> median-equality test (<span style="font-style:italic">anova.rq</span>, Wald), <i>T</i><sub><i>n</i></sub> = ${f2(R.omF[0])}, <i>df</i> = ${R.omdf1[0]}, <i>p</i> ${pFmt(R.omp[0])}.</p>`
           : `<p class="tnum" style="margin-top:14px;margin-bottom:2px"><b>Omnibus (subordinate, non-gating):</b> median-equality test could not be computed on these data (see console).</p>`;
         document.getElementById('console').textContent = consoleText;
         document.getElementById('apa').innerHTML = main.screenHtml + omLine + mt;
