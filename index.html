@@ -849,10 +849,18 @@ for (i in 1:(k-1)) for (j in (i+1):k) {
 ph <- p.adjust(pr, method = "holm")
 for (r in 1:m) cat(sprintf("  %s - %s: diff = %.4f, simultaneous CI [%.4f, %.4f], z = %.3f, p(raw) = %.5g, p(Holm) = %.5g\\n",
   gi[r], gj[r], dv[r], lo[r], hi[r], zv[r], pr[r], ph[r]))
+# Omnibus: chi-square test of homogeneity across all k groups (same estimand as the contrasts)
+omtab <- rbind(success = xs, failure = ns - xs)
+omchi <- suppressWarnings(chisq.test(omtab, correct = FALSE))
+omstat <- unname(omchi$statistic); omdf <- unname(omchi$parameter); omp <- omchi$p.value
+omminexp <- min(omchi$expected)
+cat(sprintf("\\nOmnibus chi-square test of homogeneity: X-squared = %.4f, df = %d, p = %.5g (min expected = %.2f)\\n",
+    omstat, omdf, omp, omminexp))
 cat("\\nGroup proportions:\\n")
 for (i in 1:k) cat(sprintf("  %s: x = %d, n = %d, p-hat = %.4f\\n", lv[i], xs[i], ns[i], ps[i]))
 list(lv = lv, xs = xs, ns = ns, ps = ps, k = k, m = m,
-     gi = gi, gj = gj, dv = dv, lo = lo, hi = hi, zv = zv, pr = pr, ph = ph)`,
+     gi = gi, gj = gj, dv = dv, lo = lo, hi = hi, zv = zv, pr = pr, ph = ph,
+     omstat = omstat, omdf = omdf, omp = omp, omminexp = omminexp)`,
     async run({env, cols, active, used, dropped}){
       document.getElementById('edaOut').classList.add('hidden');
       setStatus('Running in R…',{busy:true});
@@ -881,11 +889,12 @@ list(lv = lv, xs = xs, ns = ns, ps = ps, k = k, m = m,
           pt += `<tr><td>${String(R.gi[r])} \u2212 ${String(R.gj[r])}</td><td class="num">${nz(R.dv[r])}</td><td class="num">[${nz(R.lo[r])}, ${nz(R.hi[r])}]</td><td class="num">${f2(R.zv[r])}</td><td class="num">${pcell(R.ph[r])}</td></tr>`;
         }
         pt += `</tbody></table>`;
+        const omLine = `<p class="tnum" style="margin-top:14px;margin-bottom:2px"><b>Omnibus (subordinate, non-gating):</b> \u03C7\u00B2 test of homogeneity, <i>\u03C7</i>\u00B2(${R.omdf[0]}) = ${f2(R.omstat[0])}, <i>p</i> ${pFmt(R.omp[0])}.</p>`;
         document.getElementById('console').textContent = consoleText;
-        document.getElementById('apa').innerHTML = main.screenHtml + pt;
+        document.getElementById('apa').innerHTML = main.screenHtml + omLine + pt;
         lastResult = { plain: main.plain, htmlTable: main.copyHtml };
         document.getElementById('outStep').classList.remove('hidden');
-        const methodNote = `<b>Why these methods.</b> Each pairwise difference uses the Newcombe hybrid-score interval, which keeps good coverage at any <i>n</i>, here computed at the Bonferroni-adjusted per-interval level so all ${m} intervals hold jointly at ${pct(env.conf)} (Newcombe, 1998). Testing uses Holm-adjusted <i>p</i>-values, which control the familywise error rate and are uniformly more powerful than Bonferroni (Holm, 1979). Because Holm does not invert cleanly to two-sided simultaneous intervals, the tests and the intervals use different adjustments \u2014 so a comparison can be Holm-significant while its simultaneous CI grazes the null. That is not a contradiction; it is the price of honest joint coverage.`;
+        const methodNote = `<b>Why these methods.</b> Each pairwise difference uses the Newcombe hybrid-score interval, which keeps good coverage at any <i>n</i>, here computed at the Bonferroni-adjusted per-interval level so all ${m} intervals hold jointly at ${pct(env.conf)} (Newcombe, 1998). Testing uses Holm-adjusted <i>p</i>-values, which control the familywise error rate and are uniformly more powerful than Bonferroni (Holm, 1979). Because Holm does not invert cleanly to two-sided simultaneous intervals, the tests and the intervals use different adjustments \u2014 so a comparison can be Holm-significant while its simultaneous CI grazes the null. That is not a contradiction; it is the price of honest joint coverage. The <b>omnibus</b> \u03C7\u00B2 test of homogeneity tests <i>H</i>\u2080: all ${k} group proportions are equal \u2014 the joint version of the pairwise nulls, on the same scale. It is reported as a subordinate, <i>non-gating</i> summary: the pairwise comparisons control their own error rate and are read directly, never conditioned on the omnibus. Because both are framed on the proportions, they can disagree \u2014 a significant \u03C7\u00B2 with no single significant pair signals a difference spread diffusely across groups; that is informative.`;
         const mn=document.getElementById('methodNote'); mn.innerHTML=methodNote; mn.classList.remove('hidden');
         setStatus(`Done. ${used} rows used${dropped?`, ${dropped} dropped for missing values`:''}.`);
       } finally { await shelter.purge(); }
@@ -1246,10 +1255,24 @@ for (i in 1:(k-1)) for (j in (i+1):k) {
 ph <- p.adjust(pr, method = "holm")
 for (r in 1:m) cat(sprintf("  %s - %s: Mdn diff = %.4f, simultaneous CI [%.4f, %.4f], t = %.3f, p(raw) = %.5g, p(Holm) = %.5g\\n",
   gi[r], gj[r], est[r], lo[r], hi[r], tv[r], pr[r], ph[r]))
+# Omnibus: joint test that all group medians are equal (anova.rq, same estimand as contrasts)
+omfit <- rq(y ~ g, tau = 0.5, data = d)
+omnull <- rq(y ~ 1, tau = 0.5, data = d)
+oman <- tryCatch(anova(omfit, omnull, test = "Wald", se = "nid"), error = function(e) e)
+if (inherits(oman, "error")) {
+  omF <- NA; omdf1 <- NA; omdf2 <- NA; omp <- NA
+  cat("\\nOmnibus (anova.rq) could not be computed on these data.\\n")
+} else {
+  tt <- oman$table
+  omF <- tt$F[1]; omdf1 <- tt$ndf[1]; omdf2 <- tt$ddf[1]; omp <- tt$pvalue[1]
+  cat(sprintf("\\nOmnibus median-equality test (anova.rq, Wald): F = %.4f, df = (%d, %d), p = %.5g\\n",
+      omF, omdf1, omdf2, omp))
+}
 cat("\\nGroup medians:\\n")
 for (i in 1:k) cat(sprintf("  %s: n = %d, Mdn = %.4f\\n", lv[i], ns[i], mds[i]))
 list(lv = lv, ns = ns, mds = mds, k = k, m = m,
-     gi = gi, gj = gj, est = est, lo = lo, hi = hi, tv = tv, pr = pr, ph = ph)`,
+     gi = gi, gj = gj, est = est, lo = lo, hi = hi, tv = tv, pr = pr, ph = ph,
+     omF = omF, omdf1 = omdf1, omdf2 = omdf2, omp = omp)`,
     async run({env, cols, active, used, dropped}){
       document.getElementById('edaOut').classList.add('hidden');
       if(!installed.has('quantreg')){ setStatus('Installing quantreg (one-time download)…',{busy:true}); await webR.installPackages(['quantreg']); installed.add('quantreg'); }
@@ -1279,11 +1302,15 @@ list(lv = lv, ns = ns, mds = mds, k = k, m = m,
           mt += `<tr><td>${String(R.gi[r])} \u2212 ${String(R.gj[r])}</td><td class="num">${f2(R.est[r])}</td><td class="num">[${f2(R.lo[r])}, ${f2(R.hi[r])}]</td><td class="num">${f2(R.tv[r])}</td><td class="num">${pcell(R.ph[r])}</td></tr>`;
         }
         mt += `</tbody></table>`;
+        const omAvail = R.omp && Number.isFinite(Number(R.omp[0]));
+        const omLine = omAvail
+          ? `<p class="tnum" style="margin-top:14px;margin-bottom:2px"><b>Omnibus (subordinate, non-gating):</b> median-equality test (<span style="font-style:italic">anova.rq</span>, Wald), <i>F</i>(${R.omdf1[0]}, ${R.omdf2[0]}) = ${f2(R.omF[0])}, <i>p</i> ${pFmt(R.omp[0])}.</p>`
+          : `<p class="tnum" style="margin-top:14px;margin-bottom:2px"><b>Omnibus (subordinate, non-gating):</b> median-equality test could not be computed on these data (see console).</p>`;
         document.getElementById('console').textContent = consoleText;
-        document.getElementById('apa').innerHTML = main.screenHtml + mt;
+        document.getElementById('apa').innerHTML = main.screenHtml + omLine + mt;
         lastResult = { plain: main.plain, htmlTable: main.copyHtml };
         document.getElementById('outStep').classList.remove('hidden');
-        const methodNote = `<b>Why this analysis.</b> Quantile regression at \u03C4 = 0.5 estimates the difference between group <i>medians</i> \u2014 a dimensioned location shift in the outcome's own units, the right estimand for interval/ratio outcomes when means are not the target. (The rank-based Brunner-Munzel tests stochastic dominance, not medians \u2014 Divine et al., 2018; this module is the one that actually compares medians.) Multiplicity is handled as in the proportions section: Holm-adjusted <i>p</i>-values control the familywise error rate (Holm, 1979), and the CIs are single-step Bonferroni simultaneous intervals so all ${m} hold jointly at the ${pct(env.conf)} level. Standard errors use the kernel ("nid") method, which allows unequal spread across groups.`;
+        const methodNote = `<b>Why this analysis.</b> Quantile regression at \u03C4 = 0.5 estimates the difference between group <i>medians</i> \u2014 a dimensioned location shift in the outcome's own units, the right estimand for interval/ratio outcomes when means are not the target. (The rank-based Brunner-Munzel tests stochastic dominance, not medians \u2014 Divine et al., 2018; this module is the one that actually compares medians.) Multiplicity is handled as in the proportions section: Holm-adjusted <i>p</i>-values control the familywise error rate (Holm, 1979), and the CIs are single-step Bonferroni simultaneous intervals so all ${m} hold jointly at the ${pct(env.conf)} level. Standard errors use the kernel ("nid") method, which allows unequal spread across groups. The <b>omnibus</b> is a joint quantile-regression test (<span style="font-style:italic">anova.rq</span>) of <i>H</i>\u2080: all ${k} group medians are equal \u2014 the joint version of the pairwise nulls, on the same median scale. It is reported as a subordinate, <i>non-gating</i> summary: the pairwise comparisons are read directly and never conditioned on it. A significant omnibus with no single significant pair signals a difference spread diffusely across groups.`;
         const mn=document.getElementById('methodNote'); mn.innerHTML=methodNote; mn.classList.remove('hidden');
         setStatus(`Done. ${used} rows used${dropped?`, ${dropped} dropped for missing values`:''}.`);
       } finally { await shelter.purge(); }
@@ -1790,7 +1817,7 @@ const MENU_SECTIONS = [
     ['multreg', 'Multiple Linear Regression']]],
   ['ANOVA', [
     ['welch_anova', "One-way Welch's ANOVA (Games-Howell all pairwise differences)"]]],
-  ['All Pairwise Differences (proportions, medians & ranks)', [
+  ['All Pairwise Differences (proportions, medians, and ranks)', [
     ['pairprops',        'Proportion differences (Newcombe)'],
     ['median_contrasts', 'Median differences (Quantile Regression, \u03C4 = 0.5)'],
     ['rank_contrasts',   'Group standing in the combined sample (rank-based, MCTP)'],
