@@ -722,10 +722,10 @@ c(x=x, n=n, phat=phat, z=zstat, p=ptst$p.value, cil=ptst$conf.int[1], ciu=ptst$c
       return buildAPA({
         title:`One-Sample Proportion Test for ${outcome} (success = ${success})`,
         headers:[{t:'Category'},{t:'x',it:true,num:true},{t:'n',it:true,num:true},{t:'p\u0302',num:true}],
-        rows:[[{t:success},{t:R.x,num:true},{t:R.n,num:true},{t:nz(R.phat)}]],
+        rows:[[{t:success},{t:R.x,num:true},{t:R.n,num:true},{t:nzsig(R.phat)}]],
         note:{
-          html:`<i>Note.</i> <i>z</i> = ${f2(R.z)}, <i>p</i> ${pFmt(R.p)}, ${sidedTxt(ctx.env.alt)}, test value = ${nz(R.p0)}. Sample proportion <i>p&#770;</i> = ${nz(R.phat)}, ${pct(ctx.conf)} Wilson CI [${nz(R.cil)}, ${nz(R.ciu)}]. Cohen's <i>h</i><sub>2</sub> = ${f2(R.h2)}, ${pct(ctx.conf)} CI [${f2(R.h2l)}, ${f2(R.h2u)}].`,
-          plain:`Note. z = ${f2(R.z)}, p ${pFmt(R.p)}, ${sidedTxt(ctx.env.alt)}, test value = ${nz(R.p0)}. Sample proportion p-hat = ${nz(R.phat)}, ${pct(ctx.conf)} Wilson CI [${nz(R.cil)}, ${nz(R.ciu)}]. Cohen's h2 = ${f2(R.h2)}, ${pct(ctx.conf)} CI [${f2(R.h2l)}, ${f2(R.h2u)}].`
+          html:`<i>Note.</i> <i>z</i> = ${f2(R.z)}, <i>p</i> ${pFmt(R.p)}, ${sidedTxt(ctx.env.alt)}, test value = ${nzsig(R.p0)}. Sample proportion <i>p&#770;</i> = ${nzsig(R.phat)}, ${pct(ctx.conf)} Wilson CI [${nzsig(R.cil)}, ${nzsig(R.ciu)}]. Cohen's <i>h</i><sub>2</sub> = ${f2(R.h2)}, ${pct(ctx.conf)} CI [${f2(R.h2l)}, ${f2(R.h2u)}].`,
+          plain:`Note. z = ${f2(R.z)}, p ${pFmt(R.p)}, ${sidedTxt(ctx.env.alt)}, test value = ${nzsig(R.p0)}. Sample proportion p-hat = ${nzsig(R.phat)}, ${pct(ctx.conf)} Wilson CI [${nzsig(R.cil)}, ${nzsig(R.ciu)}]. Cohen's h2 = ${f2(R.h2)}, ${pct(ctx.conf)} CI [${f2(R.h2l)}, ${f2(R.h2u)}].`
         }
       });
     }
@@ -797,12 +797,12 @@ c(x1=x1,n1=n1,p1=p1, x2=x2,n2=n2,p2=p2, z=zstat, p=ptst$p.value,
         title:`Two-Proportion Test for ${outcome} (success = ${success}) by ${group}`,
         headers:[{t:group},{t:'x',it:true,num:true},{t:'n',it:true,num:true},{t:'p\u0302',num:true}],
         rows:[
-          [{t:g1},{t:R.x1,num:true},{t:R.n1,num:true},{t:nz(R.p1)}],
-          [{t:g2},{t:R.x2,num:true},{t:R.n2,num:true},{t:nz(R.p2)}]
+          [{t:g1},{t:R.x1,num:true},{t:R.n1,num:true},{t:nzsig(R.p1)}],
+          [{t:g2},{t:R.x2,num:true},{t:R.n2,num:true},{t:nzsig(R.p2)}]
         ],
         note:{
-          html:`<i>Note.</i> <i>z</i> = ${f2(R.z)}, <i>p</i> ${pFmt(R.p)}, ${sidedTxt(ctx.env.alt)}. Difference (<i>p&#770;</i><sub>${g1}</sub> \u2212 <i>p&#770;</i><sub>${g2}</sub>) = ${nz(R.diff)}, ${ci} Newcombe CI [${nz(R.dlo)}, ${nz(R.dup)}]. Cohen's <i>h</i> = ${f2(R.h)}, ${ci} CI [${f2(R.hlo)}, ${f2(R.hup)}]. Risk ratio = ${f2(R.RR)}, ${ci} CI [${f2(R.rrlo)}, ${f2(R.rrup)}]. Odds ratio = ${f2(R.OR)}, ${ci} CI [${f2(R.orlo)}, ${f2(R.orup)}].${hacH}`,
-          plain:`Note. z = ${f2(R.z)}, p ${pFmt(R.p)}, ${sidedTxt(ctx.env.alt)}. Difference (p-hat[${g1}] - p-hat[${g2}]) = ${nz(R.diff)}, ${ci} Newcombe CI [${nz(R.dlo)}, ${nz(R.dup)}]. Cohen's h = ${f2(R.h)}, ${ci} CI [${f2(R.hlo)}, ${f2(R.hup)}]. Risk ratio = ${f2(R.RR)}, ${ci} CI [${f2(R.rrlo)}, ${f2(R.rrup)}]. Odds ratio = ${f2(R.OR)}, ${ci} CI [${f2(R.orlo)}, ${f2(R.orup)}].${hacP}`
+          html:`<i>Note.</i> <i>z</i> = ${f2(R.z)}, <i>p</i> ${pFmt(R.p)}, ${sidedTxt(ctx.env.alt)}. Difference (<i>p&#770;</i><sub>${g1}</sub> \u2212 <i>p&#770;</i><sub>${g2}</sub>) = ${nzsig(R.diff)}, ${ci} Newcombe CI [${nzsig(R.dlo)}, ${nzsig(R.dup)}]. Cohen's <i>h</i> = ${f2(R.h)}, ${ci} CI [${f2(R.hlo)}, ${f2(R.hup)}]. Risk ratio = ${f2(R.RR)}, ${ci} CI [${f2(R.rrlo)}, ${f2(R.rrup)}]. Odds ratio = ${f2(R.OR)}, ${ci} CI [${f2(R.orlo)}, ${f2(R.orup)}].${hacH}`,
+          plain:`Note. z = ${f2(R.z)}, p ${pFmt(R.p)}, ${sidedTxt(ctx.env.alt)}. Difference (p-hat[${g1}] - p-hat[${g2}]) = ${nzsig(R.diff)}, ${ci} Newcombe CI [${nzsig(R.dlo)}, ${nzsig(R.dup)}]. Cohen's h = ${f2(R.h)}, ${ci} CI [${f2(R.hlo)}, ${f2(R.hup)}]. Risk ratio = ${f2(R.RR)}, ${ci} CI [${f2(R.rrlo)}, ${f2(R.rrup)}]. Odds ratio = ${f2(R.OR)}, ${ci} CI [${f2(R.orlo)}, ${f2(R.orup)}].${hacP}`
         }
       });
     }
@@ -1747,8 +1747,8 @@ list(a=a, b=b, cc=cc, d=d, n=n, nd=nd, pt=pt, ps=ps, D=D, DL=DL, DU=DU,
           ? `Exact binomial test on the ${R.nd[0]} discordant pairs, p ${pFmt(R.pex[0])}`
           : `McNemar chi-square(1) = ${f2(R.chi2[0])}, p ${pFmt(R.pchi[0])}`;
         const note = {
-          html:`<i>Note.</i> ${testTxt}, ${sidedTxt(env.alt)}; <i>n</i> = ${R.n[0]} pairs. Difference in the proportion of ${su} (${preName} \u2212 ${postName}) = ${nz(R.D[0])}, ${ci} Newcombe paired CI [${nz(R.DL[0])}, ${nz(R.DU[0])}]. Paired odds ratio (b/c) = ${fci(R.orv[0])}, ${ci} exact CI [${fci(R.orl[0])}, ${fci(R.oru[0])}].`,
-          plain:`Note. ${testTxtP}, ${sidedTxt(env.alt)}; n = ${R.n[0]} pairs. Difference in the proportion of ${su} (${preName} - ${postName}) = ${nz(R.D[0])}, ${ci} Newcombe paired CI [${nz(R.DL[0])}, ${nz(R.DU[0])}]. Paired odds ratio (b/c) = ${fci(R.orv[0])}, ${ci} exact CI [${fci(R.orl[0])}, ${fci(R.oru[0])}].`
+          html:`<i>Note.</i> ${testTxt}, ${sidedTxt(env.alt)}; <i>n</i> = ${R.n[0]} pairs. Difference in the proportion of ${su} (${preName} \u2212 ${postName}) = ${nzsig(R.D[0])}, ${ci} Newcombe paired CI [${nzsig(R.DL[0])}, ${nzsig(R.DU[0])}]. Paired odds ratio (b/c) = ${fci(R.orv[0])}, ${ci} exact CI [${fci(R.orl[0])}, ${fci(R.oru[0])}].`,
+          plain:`Note. ${testTxtP}, ${sidedTxt(env.alt)}; n = ${R.n[0]} pairs. Difference in the proportion of ${su} (${preName} - ${postName}) = ${nzsig(R.D[0])}, ${ci} Newcombe paired CI [${nzsig(R.DL[0])}, ${nzsig(R.DU[0])}]. Paired odds ratio (b/c) = ${fci(R.orv[0])}, ${ci} exact CI [${fci(R.orl[0])}, ${fci(R.oru[0])}].`
         };
         const main = buildAPA({ title:`Paired Contingency Table and McNemar's Test of ${preName} vs ${postName} (success = ${su})`, headers, rows, note });
         document.getElementById('console').textContent = consoleText;
