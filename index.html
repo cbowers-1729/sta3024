@@ -1403,6 +1403,100 @@ if (inherits(res, "error")) {
     }
   },
 
+  bm_pairwise: {
+    label: "Head-to-head rank comparisons (pairwise Brunner-Munzel) \u2014 3+ groups",
+    dropHint: "Long/tidy data: a numeric or ordinal outcome and a grouping column with 3 or more levels. Each pair is compared on its own, ignoring the other groups. (For exactly 2 groups, use the Brunner-Munzel test.)",
+    roles: [
+      { key:'resp', kind:'numeric',     label:'Response \u2014 numeric or ordinal outcome' },
+      { key:'grp',  kind:'group_anova', label:'Group \u2014 3 to 12 levels' }
+    ],
+    packages: ['mvtnorm','multcomp','survival','nparcomp'],
+    defaults: { resp:'weight', grp:'feed' },
+    rProgram: `
+suppressMessages(library(nparcomp))
+d <- data.frame(y = as.numeric(resp), g = factor(grp))
+lv <- levels(d$g); k <- length(lv); m <- k*(k-1)/2
+ns <- as.numeric(tapply(d$y, d$g, length))
+alpha <- 1 - conf
+conf_b <- 1 - alpha/m   # Bonferroni per-interval level for simultaneous CIs
+cat("Head-to-head pairwise Brunner-Munzel (each pair re-ranked on its own)\\n")
+cat(sprintf("Groups: %s\\n", paste(lv, collapse=", ")))
+cat(sprintf("%d comparisons; Holm-adjusted p-values; %.0f%% Bonferroni simultaneous CIs (per-interval %.4f)\\n\\n", m, conf*100, conf_b))
+gi <- c(); gj <- c(); est <- c(); lo <- c(); hi <- c(); tv <- c(); pr <- c(); failpair <- c()
+for (i in 1:(k-1)) for (j in (i+1):k) {
+  sub <- droplevels(d[d$g %in% c(lv[i], lv[j]), ])
+  # estimate + per-pair p at nominal level (for Holm); CI at Bonferroni level
+  r1 <- tryCatch(npar.t.test(y ~ g, data = sub, method = "t.app", info = FALSE,
+                  alternative = "two.sided", conf.level = conf_b), error = function(e) e)
+  if (inherits(r1, "error")) {
+    gi <- c(gi, lv[i]); gj <- c(gj, lv[j]); est <- c(est, NA); lo <- c(lo, NA); hi <- c(hi, NA)
+    tv <- c(tv, NA); pr <- c(pr, NA); failpair <- c(failpair, paste(lv[i], lv[j], sep="-"))
+    next
+  }
+  a <- r1$Analysis
+  # npar.t.test reports p(group1,group2) = P(X_g1 < X_g2). Orient as P(level_i < level_j).
+  eff <- a$Estimator[1]; L <- a$Lower[1]; U <- a$Upper[1]; Tval <- a$T[1]; pval <- a$p.Value[1]
+  gi <- c(gi, lv[i]); gj <- c(gj, lv[j]); est <- c(est, eff); lo <- c(lo, L); hi <- c(hi, U)
+  tv <- c(tv, Tval); pr <- c(pr, pval)
+}
+ph <- p.adjust(pr, method = "holm")
+for (r in seq_along(est)) {
+  if (is.na(est[r])) {
+    cat(sprintf("  %s vs %s: could not be computed (likely complete separation)\\n", gi[r], gj[r]))
+  } else {
+    cat(sprintf("  P(%s < %s) = %.4f, %.0f%% sim. CI [%.4f, %.4f], T = %.3f, p(raw) = %.5g, p(Holm) = %.5g\\n",
+        gi[r], gj[r], est[r], conf*100, lo[r], hi[r], tv[r], pr[r], ph[r]))
+  }
+}
+cat("\\nGroup sizes:\\n")
+for (i in 1:k) cat(sprintf("  %s: n = %d\\n", lv[i], ns[i]))
+list(lv = lv, ns = ns, k = k, m = m,
+     gi = gi, gj = gj, est = est, lo = lo, hi = hi, tv = tv, pr = pr, ph = ph,
+     nfail = length(failpair))`,
+    async run({env, cols, active, used, dropped}){
+      document.getElementById('edaOut').classList.add('hidden');
+      for(const p of this.packages){
+        if(!installed.has(p)){ setStatus(`Installing ${p} (one-time download)\u2026`,{busy:true}); await webR.installPackages([p]); installed.add(p); }
+      }
+      setStatus('Running in R\u2026',{busy:true});
+      const shelter = await new webR.Shelter();
+      try{
+        const cap = await shelter.captureR(this.rProgram, { env });
+        const consoleText = cap.output.filter(o=>o.type==='stdout'||o.type==='stderr').map(o=>o.data).join('\n');
+        const R = rlistToObj(await cap.result.toJs());
+        document.getElementById('console').textContent = consoleText;
+        const grp=cols.grp, resp=cols.resp, ci=pct(env.conf);
+        const k=R.k[0], m=R.est.length, lv=R.lv;
+        const pcell = p => (p==null || Number.isNaN(Number(p))) ? '\u2014' : (p < .001 ? '< .001' : nz(p,3));
+        const fcell = x => (x==null || Number.isNaN(Number(x))) ? '\u2014' : f2(x);
+        const nzc = x => (x==null || Number.isNaN(Number(x))) ? '\u2014' : nz(x);
+        // group sizes table
+        const rows = lv.map((g,i)=>[{t:String(g)},{t:R.ns[i],num:true}]);
+        const note = {
+          html:`<i>Note.</i> Each comparison is a Brunner-Munzel relative effect P(group&nbsp;1 &lt; group&nbsp;2), with each pair re-ranked on its own (the other groups are ignored). ${m} comparisons: Holm-adjusted <i>p</i>-values; ${ci} single-step (Bonferroni) simultaneous CIs.`,
+          plain:`Note. Each comparison is a Brunner-Munzel relative effect P(group 1 < group 2), with each pair re-ranked on its own (the other groups are ignored). ${m} comparisons: Holm-adjusted p-values; ${ci} single-step (Bonferroni) simultaneous CIs.`
+        };
+        const main = buildAPA({
+          title:`Head-to-Head Pairwise Brunner-Munzel Comparisons for ${resp} by ${grp}`,
+          headers:[{t:grp},{t:'n',it:true,num:true}],
+          rows, note
+        });
+        let pt = `<p class="tnum" style="margin-top:14px">Pairwise relative effects (${ci} simultaneous CIs)</p><table class="apa-tbl"><thead><tr><th>Comparison</th><th class="num">P(1 &lt; 2)</th><th class="num">${ci} CI</th><th class="num"><span style="font-style:italic">T</span></th><th class="num"><span style="font-style:italic">p</span> (Holm)</th></tr></thead><tbody>`;
+        for(let r=0;r<m;r++){
+          pt += `<tr><td>P(${String(R.gi[r])} &lt; ${String(R.gj[r])})</td><td class="num">${nzc(R.est[r])}</td><td class="num">${(R.lo[r]==null||Number.isNaN(Number(R.lo[r])))?'\u2014':`[${nz(R.lo[r])}, ${nz(R.hi[r])}]`}</td><td class="num">${fcell(R.tv[r])}</td><td class="num">${pcell(R.ph[r])}</td></tr>`;
+        }
+        pt += `</tbody></table>`;
+        document.getElementById('apa').innerHTML = main.screenHtml + pt;
+        lastResult = { plain: main.plain, htmlTable: main.copyHtml };
+        document.getElementById('outStep').classList.remove('hidden');
+        const sepNote = (R.nfail && R.nfail[0]>0) ? ` One or more pairs were perfectly separated and could not be interval-estimated; they are shown as dashes.` : '';
+        const methodNote = `<b>Why this analysis.</b> This answers the <i>head-to-head</i> question: for each pair of groups on its own, how likely is a randomly drawn value from one to exceed a value from the other? Each pair is <i>re-ranked using only those two groups</i>, so the comparison of A and B does not depend on what is in any third group \u2014 the direct <i>k</i>-group extension of the two-sample Brunner-Munzel test (Brunner &amp; Munzel, 2000), which assumes neither equal variances nor equal shapes and is valid for ordinal as well as interval/ratio outcomes. Multiplicity follows the same scheme as the proportion- and median-difference modules: Holm-adjusted <i>p</i>-values control the familywise error rate for testing (Holm, 1979), while the confidence intervals are single-step Bonferroni simultaneous intervals \u2014 because Holm does not invert cleanly to two-sided simultaneous intervals, a pair can be Holm-significant while its CI grazes \u00BD; that is honest coverage, not a contradiction. <b>No omnibus is reported here, by design:</b> a global test consistent with this head-to-head estimand has no clean standard form, because re-ranking each pair removes the shared rank structure a joint test would need. The omnibus that <i>does</i> exist \u2014 the Brunner-Dette-Munk / MCTP test \u2014 answers the different \u201Cstanding in the combined sample\u201D question; if you want that, use the companion \u201CGroup standing in the combined sample\u201D module.${sepNote}`;
+        const mn=document.getElementById('methodNote'); mn.innerHTML=methodNote; mn.classList.remove('hidden');
+        setStatus(`Done. ${used} rows used${dropped?`, ${dropped} dropped for missing values`:''}.`);
+      } finally { await shelter.purge(); }
+    }
+  },
+
   fisher: {
     label: "Fisher's exact test (independence, sparse tables)",
     sided: true,
@@ -1699,7 +1793,8 @@ const MENU_SECTIONS = [
   ['All Pairwise Differences (proportions, medians & ranks)', [
     ['pairprops',        'Proportion differences (Newcombe)'],
     ['median_contrasts', 'Median differences (Quantile Regression, \u03C4 = 0.5)'],
-    ['rank_contrasts',   'Group standing in the combined sample (rank-based, MCTP)']]]
+    ['rank_contrasts',   'Group standing in the combined sample (rank-based, MCTP)'],
+    ['bm_pairwise',      'Head-to-head rank comparisons (pairwise Brunner-Munzel)']]]
 ];
 const inMenu = new Set();
 MENU_SECTIONS.forEach(([secLabel, items])=>{
