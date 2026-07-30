@@ -160,6 +160,7 @@
 
   <div class="step hidden" id="edaOut">
     <div class="step-h"><span class="n">04</span> Exploratory data analysis</div>
+    <div class="panel-h"><span>Summary statistics</span><button class="copy" id="edaCopyBtn">Copy table</button></div>
     <div class="apa" id="edaStats"></div>
     <div class="edaplots" id="edaPlots"></div>
   </div>
@@ -257,16 +258,43 @@ function quantile7(s, p){ const n=s.length; if(!n) return NaN; const h=(n-1)*p, 
 function summ(vals){ const v=vals.slice().sort((a,b)=>a-b); const n=v.length; const mean=v.reduce((a,b)=>a+b,0)/n;
   const sd = n>1 ? Math.sqrt(v.reduce((a,b)=>a+(b-mean)*(b-mean),0)/(n-1)) : NaN;
   return {n, mean, sd, sem:sd/Math.sqrt(n), min:v[0], q1:quantile7(v,.25), mdn:quantile7(v,.5), q3:quantile7(v,.75), max:v[n-1]}; }
-function edaStatsHTML(vals, groups, vname, gname){
+function edaStatsBuild(vals, groups, vname, gname){
   const rows=[];
   if(groups){ const L=[...new Set(groups)].sort(); L.forEach(g=>rows.push([g, summ(vals.filter((_,i)=>groups[i]===g))])); }
   else rows.push([vname, summ(vals)]);
-  const head = `<th>${groups?gname:'Variable'}</th>`+['n','M','SD','SEM','Min','Q1','Mdn','Q3','Max']
+  const labHead = groups ? gname : 'Variable';
+  const statHead = ['n','M','SD','SEM','Min','Q1','Mdn','Q3','Max'];
+  const cells = s => [String(s.n), f2(s.mean), f2(s.sd), f2(s.sem), f2(s.min), f2(s.q1), f2(s.mdn), f2(s.q3), f2(s.max)];
+
+  const head = `<th>${labHead}</th>`+statHead
     .map(h=>`<th class="num"><span style="font-style:italic">${h}</span></th>`).join('');
   const body = rows.map(([lab,s])=>`<tr><td>${lab}</td>`+
-    [s.n, f2(s.mean), f2(s.sd), f2(s.sem), f2(s.min), f2(s.q1), f2(s.mdn), f2(s.q3), f2(s.max)]
-      .map(x=>`<td class="num">${x}</td>`).join('')+`</tr>`).join('');
-  return `<p class="tnum">Summary statistics</p><table class="apa-tbl"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+    cells(s).map(x=>`<td class="num">${x}</td>`).join('')+`</tr>`).join('');
+  const screenHtml = `<table class="apa-tbl"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+
+  const title = groups ? `Descriptive Statistics for ${vname} by ${gname}`
+                       : `Descriptive Statistics for ${vname}`;
+  const noteHtml  = `<i>Note.</i> <i>SEM</i> = standard error of the mean; <i>Q</i>1 and <i>Q</i>3 = first and third quartiles; <i>Mdn</i> = median. Quartiles use R's type-7 definition.`;
+  const notePlain = `Note. SEM = standard error of the mean; Q1 and Q3 = first and third quartiles; Mdn = median. Quartiles use R's type-7 definition.`;
+
+  const C="padding:3px 10px;font-family:'Times New Roman',serif;font-size:11pt;";
+  const TL="border-top:1.5px solid #000;", BH="border-bottom:1px solid #000;", BB="border-bottom:1.5px solid #000;";
+  const cHead = [labHead, ...statHead].map((h,i)=>
+    `<td style="${C}${TL}${BH}text-align:${i===0?'left':'right'};${i?'font-style:italic;':''}">${h}</td>`).join('');
+  const cBody = rows.map(([lab,s],ri)=>{ const last=ri===rows.length-1;
+    return `<tr>`+[lab,...cells(s)].map((c,i)=>
+      `<td style="${C}${last?BB:''}text-align:${i===0?'left':'right'};">${c}</td>`).join('')+`</tr>`; }).join('');
+  const copyHtml =
+    `<p style="font-style:italic;font-family:'Times New Roman',serif;font-size:11pt;margin:0;">Table 1</p>`+
+    `<p style="font-style:italic;font-family:'Times New Roman',serif;font-size:11pt;margin:0 0 6pt;">${title}</p>`+
+    `<table style="border-collapse:collapse;"><tr>${cHead}</tr>${cBody}</table>`+
+    `<p style="font-family:'Times New Roman',serif;font-size:11pt;margin:6pt 0 0;">${noteHtml}</p>`;
+
+  const plain = `Table 1\n${title}\n\n`+
+    [labHead,...statHead].join('\t')+'\n'+
+    rows.map(([lab,s])=>[lab,...cells(s)].join('\t')).join('\n')+'\n\n'+notePlain;
+
+  return {screenHtml, copyHtml, plain};
 }
 function edaPlotCode(active, cols, pal){
   const has = k => active.some(r=>r.key===k);
@@ -303,7 +331,7 @@ const PALETTES = {
   gray:    { name:'Grayscale',                accent:'#555555', cats:['#222222','#666666','#999999','#bbbbbb','#444444','#888888'] }
 };
 
-let lastEda = null;
+let lastEda = null, lastEdaStats = null;
 async function drawEDA(env, cols, active){
   if(!ggReady){ setStatus('Installing the plotting library (one-time download)…',{busy:true}); await webR.installPackages(['ggplot2']); ggReady=true; }
   setStatus('Drawing plots in R…',{busy:true});
@@ -312,8 +340,9 @@ async function drawEDA(env, cols, active){
   const shelter = await new webR.Shelter();
   try{
     const cap = await shelter.captureR(code, { env, captureGraphics:{ width:820, height:460 } });
-    document.getElementById('edaStats').innerHTML =
-      edaStatsHTML(env.variable, env.group||null, cols.variable, cols.group);
+    const st = edaStatsBuild(env.variable, env.group||null, cols.variable, cols.group);
+    document.getElementById('edaStats').innerHTML = st.screenHtml;
+    lastEdaStats = { htmlTable: st.copyHtml, plain: st.plain };
     const wrap=document.getElementById('edaPlots'); wrap.innerHTML='';
     (cap.images||[]).forEach((img,i)=>{
       const card=document.createElement('div'); card.className='plotcard';
@@ -2117,18 +2146,25 @@ runBtn.addEventListener('click', async ()=>{
 });
 
 /* ============================ copy ============================ */
-document.getElementById('copyBtn').addEventListener('click', async ()=>{
-  if(!lastResult) return; const btn=document.getElementById('copyBtn');
-  try{
-    if(navigator.clipboard && window.ClipboardItem){
-      await navigator.clipboard.write([new ClipboardItem({
-        'text/html': new Blob([lastResult.htmlTable],{type:'text/html'}),
-        'text/plain': new Blob([lastResult.plain],{type:'text/plain'})
-      })]);
-    } else { await navigator.clipboard.writeText(lastResult.plain); }
-    btn.textContent='Copied ✓'; setTimeout(()=>btn.textContent='Copy table',1600);
-  }catch(e){ btn.textContent='Press Ctrl/Cmd-C'; }
-});
+function wireCopy(btnId, getPayload){
+  const btn = document.getElementById(btnId);
+  if(!btn) return;
+  btn.addEventListener('click', async ()=>{
+    const payload = getPayload();
+    if(!payload) return;
+    try{
+      if(navigator.clipboard && window.ClipboardItem){
+        await navigator.clipboard.write([new ClipboardItem({
+          'text/html':  new Blob([payload.htmlTable],{type:'text/html'}),
+          'text/plain': new Blob([payload.plain],{type:'text/plain'})
+        })]);
+      } else { await navigator.clipboard.writeText(payload.plain); }
+      btn.textContent='Copied ✓'; setTimeout(()=>btn.textContent='Copy table',1600);
+    }catch(e){ btn.textContent='Press Ctrl/Cmd-C'; setTimeout(()=>btn.textContent='Copy table',2400); }
+  });
+}
+wireCopy('copyBtn',    ()=>lastResult);
+wireCopy('edaCopyBtn', ()=>lastEdaStats);
 </script>
 </body>
 </html>
