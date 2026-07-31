@@ -32,11 +32,18 @@
   .step-h{font-family:"Fraunces",serif; font-size:19px; font-weight:600; margin:0 0 12px;
           display:flex; align-items:baseline; gap:10px}
   .step-h .n{font-size:13px; color:var(--accent); font-family:"IBM Plex Mono",monospace}
-  .drop{display:block; border:1.5px dashed var(--rule); border-radius:8px; background:var(--paper-2);
+  .drop{display:block; position:relative; border:1.5px dashed var(--rule); border-radius:8px; background:var(--paper-2);
         padding:26px; text-align:center; cursor:pointer; transition:.15s}
   .drop:hover,.drop.armed{border-color:var(--accent); background:var(--accent-soft)}
-  .drop input{display:none}
+  /* iOS Safari can refuse to activate a display:none file input; clip it instead. */
+  .drop input[type=file]{position:absolute; width:1px; height:1px; padding:0; margin:-1px;
+        overflow:hidden; clip:rect(0 0 0 0); clip-path:inset(50%); white-space:nowrap; border:0}
   .drop .big{font-size:15px} .drop .small{font-size:13px; color:var(--ink-soft); margin-top:6px}
+  button.pick-btn{font:inherit; font-weight:600; font-size:15px; color:#fff; background:var(--accent);
+        border:0; border-radius:7px; padding:11px 22px; margin-bottom:12px; cursor:pointer;
+        transition:.15s; -webkit-appearance:none; touch-action:manipulation}
+  button.pick-btn:hover{filter:brightness(1.07)}
+  button.pick-btn:focus-visible{outline:2px solid var(--ink); outline-offset:2px}
   .filename{font-family:"IBM Plex Mono",monospace; font-size:13px; color:var(--accent); margin-top:10px}
   .roles{display:grid; grid-template-columns:1fr 1fr; gap:16px}
   @media(max-width:640px){.roles{grid-template-columns:1fr}}
@@ -104,12 +111,14 @@
 
   <div class="step hidden" id="uploadStep">
     <div class="step-h"><span class="n">02</span> Upload a CSV</div>
-    <label class="drop" id="drop">
-      <input type="file" id="file" accept=".csv,text/csv">
-      <div class="big">Click to choose a file, or drag one here</div>
+    <div class="drop" id="drop">
+      <input type="file" id="file"
+             accept=".csv,.txt,text/csv,text/plain,text/comma-separated-values,application/csv,application/vnd.ms-excel">
+      <button type="button" class="pick-btn" id="pickBtn">Choose CSV file</button>
+      <div class="big">or drag a file anywhere in this box</div>
       <div class="small" id="dropHint"></div>
       <div class="filename" id="filename"></div>
-    </label>
+    </div>
   </div>
 
   <div class="step hidden" id="roleStep">
@@ -1913,7 +1922,18 @@ testSel.addEventListener('change', ()=>{
 ['dragover','dragenter'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.add('armed');}));
 ['dragleave','drop'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.remove('armed');}));
 drop.addEventListener('drop',e=>{ if(e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]); });
-fileInput.addEventListener('change',e=>{ if(e.target.files.length) handleFile(e.target.files[0]); });
+
+// Explicit picker button (primary path on iPad/touch, where dragging is awkward).
+const pickBtn = document.getElementById('pickBtn');
+pickBtn.addEventListener('click', e=>{ e.stopPropagation(); fileInput.click(); });
+// The rest of the box stays clickable too; stopPropagation above avoids a double open.
+drop.addEventListener('click', e=>{ if(e.target !== fileInput) fileInput.click(); });
+
+fileInput.addEventListener('change',e=>{
+  if(e.target.files.length) handleFile(e.target.files[0]);
+  // Clear the value so re-picking the same filename fires 'change' again.
+  e.target.value = '';
+});
 
 function handleFile(file){
   document.getElementById('filename').textContent = file.name;
