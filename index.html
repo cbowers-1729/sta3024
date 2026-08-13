@@ -84,7 +84,9 @@
   .edaplots{display:grid; grid-template-columns:1fr 1fr; gap:18px; margin-top:18px}
   @media(max-width:820px){.edaplots{grid-template-columns:1fr}}
   .plotcard{background:#fff; border:1px solid var(--rule); border-radius:8px; padding:10px}
-  .plotcard .cap{font-size:12px; letter-spacing:.06em; text-transform:uppercase; color:var(--ink-soft); margin:0 0 8px}
+  .plotcard .caprow{display:flex; align-items:center; justify-content:space-between; gap:10px; margin:0 0 8px}
+  .plotcard .cap{font-size:12px; letter-spacing:.06em; text-transform:uppercase; color:var(--ink-soft); margin:0}
+  .plotcard .copy{flex:none}
   .plotcard canvas{width:100%; height:auto; display:block}
   #edaStats{margin-top:4px}
   .copy{font:inherit; font-size:12px; color:var(--accent); background:none; border:1px solid var(--accent);
@@ -354,11 +356,7 @@ async function drawEDA(env, cols, active){
     lastEdaStats = { htmlTable: st.copyHtml, plain: st.plain };
     const wrap=document.getElementById('edaPlots'); wrap.innerHTML='';
     (cap.images||[]).forEach((img,i)=>{
-      const card=document.createElement('div'); card.className='plotcard';
-      const c=document.createElement('p'); c.className='cap'; c.textContent=captions[i]||('Plot '+(i+1));
-      const cv=document.createElement('canvas'); cv.width=img.width; cv.height=img.height;
-      cv.getContext('2d').drawImage(img,0,0);
-      card.appendChild(c); card.appendChild(cv); wrap.appendChild(card);
+      wrap.appendChild(buildPlotCard(img, captions[i]||('Plot '+(i+1))));
     });
     document.getElementById('edaOut').classList.remove('hidden');
   } finally { await shelter.purge(); }
@@ -2016,14 +2014,62 @@ function mlrPopulateCustom(){
     : '<span class="hint">Select at least two predictors to form interactions.</span>';
 }
 
+/* ---------------------------- plot cards ---------------------------- */
+/* One card: caption row with its own copy button, then the canvas.
+   Shared by EDA and by any module that returns plots. */
+function buildPlotCard(img, caption){
+  const card = document.createElement('div'); card.className = 'plotcard';
+
+  const cv = document.createElement('canvas');
+  cv.width = img.width; cv.height = img.height;
+  cv.getContext('2d').drawImage(img, 0, 0);
+
+  const row = document.createElement('div'); row.className = 'caprow';
+  const cap = document.createElement('p'); cap.className = 'cap'; cap.textContent = caption;
+  const btn = document.createElement('button');
+  btn.type = 'button'; btn.className = 'copy'; btn.textContent = 'Copy plot';
+  btn.setAttribute('aria-label', 'Copy the ' + caption + ' plot to the clipboard');
+  btn.addEventListener('click', ()=>copyCanvas(cv, btn, caption));
+
+  row.appendChild(cap); row.appendChild(btn);
+  card.appendChild(row); card.appendChild(cv);
+  return card;
+}
+
+/* Safari (iPadOS included) revokes clipboard permission if we await the blob
+   before calling write(), so ClipboardItem gets the promise itself. */
+function copyCanvas(cv, btn, caption){
+  const back = ()=>setTimeout(()=>btn.textContent='Copy plot', 1600);
+  if(navigator.clipboard && window.ClipboardItem){
+    const blob = new Promise(res=>cv.toBlob(res,'image/png'));
+    navigator.clipboard.write([ new ClipboardItem({'image/png': blob}) ])
+      .then(()=>{ btn.textContent='Copied \u2713'; back(); })
+      .catch(()=>saveCanvas(cv, btn, caption));
+  } else { saveCanvas(cv, btn, caption); }
+}
+
+/* Fallback where image clipboard writes are unavailable: hand over the PNG. */
+function saveCanvas(cv, btn, caption){
+  const slug = (caption||'plot').toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'') || 'plot';
+  try{
+    cv.toBlob(b=>{
+      const url = URL.createObjectURL(b);
+      const a = document.createElement('a');
+      a.href = url; a.download = slug + '.png';
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(()=>URL.revokeObjectURL(url), 10000);
+    }, 'image/png');
+    btn.textContent = 'Saved PNG \u2713'; setTimeout(()=>btn.textContent='Copy plot', 2000);
+  }catch(e){
+    btn.textContent = 'Long-press the plot'; setTimeout(()=>btn.textContent='Copy plot', 2400);
+  }
+}
+
 function renderPlotsInto(images, captions){
   const wrap = document.getElementById('testPlots'); wrap.innerHTML='';
   if(!images || !images.length){ wrap.classList.add('hidden'); return; }
   images.forEach((img,i)=>{
-    const card=document.createElement('div'); card.className='plotcard';
-    const c=document.createElement('p'); c.className='cap'; c.textContent=captions[i]||('Plot '+(i+1));
-    const cv=document.createElement('canvas'); cv.width=img.width; cv.height=img.height;
-    cv.getContext('2d').drawImage(img,0,0); card.appendChild(c); card.appendChild(cv); wrap.appendChild(card);
+    wrap.appendChild(buildPlotCard(img, captions[i]||('Plot '+(i+1))));
   });
   wrap.classList.remove('hidden');
 }
@@ -2149,11 +2195,7 @@ runBtn.addEventListener('click', async ()=>{
     if(imgs.length){
       const caps = t.plotCaptions || [];
       imgs.forEach((img,i)=>{
-        const card=document.createElement('div'); card.className='plotcard';
-        const c=document.createElement('p'); c.className='cap'; c.textContent=caps[i]||('Plot '+(i+1));
-        const cv=document.createElement('canvas'); cv.width=img.width; cv.height=img.height;
-        cv.getContext('2d').drawImage(img,0,0);
-        card.appendChild(c); card.appendChild(cv); plotsWrap.appendChild(card);
+        plotsWrap.appendChild(buildPlotCard(img, caps[i]||('Plot '+(i+1))));
       });
       plotsWrap.classList.remove('hidden');
     } else { plotsWrap.classList.add('hidden'); }
