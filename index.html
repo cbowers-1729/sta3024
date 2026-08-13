@@ -1841,12 +1841,47 @@ function setStatus(msg,{busy=false,err=false}={}){
 
 /* ============================ CSV parsing ============================ */
 let columns = {}, headers = [];
+/* RFC 4180 parser. Splitting on ',' breaks on any quoted field that contains a
+   comma, which Canvas gradebook exports are full of: assignment titles like
+   "HW Mod 9 - Hypotheses, Type I, and Type II Error" and student names in
+   "Last, First" form. A naive split shifts every column after the first such
+   field, and shifts the header row by a different amount than the data rows. */
 function parseCSV(text){
   text = text.replace(/^\uFEFF/,'');
-  const lines = text.split(/\r\n|\r|\n/).filter(l=>l.length>0);
-  const split = l => l.split(',').map(c=>c.trim().replace(/^"(.*)"$/,'$1').trim());
-  const hdr = split(lines[0]); const cols={}; hdr.forEach(h=>cols[h]=[]);
-  for(let i=1;i<lines.length;i++){ const cells=split(lines[i]); hdr.forEach((h,j)=>cols[h].push(cells[j]===undefined?'':cells[j])); }
+  const rows=[]; let row=[], field='', quoted=false;
+  for(let i=0;i<text.length;i++){
+    const c=text[i];
+    if(quoted){
+      if(c==='"'){ if(text[i+1]==='"'){ field+='"'; i++; } else quoted=false; }
+      else field+=c;                       // commas and newlines are literal here
+    }
+    else if(c==='"'){ quoted=true; }
+    else if(c===','){ row.push(field); field=''; }
+    else if(c==='\n'||c==='\r'){
+      if(c==='\r'&&text[i+1]==='\n') i++;
+      row.push(field); rows.push(row); row=[]; field='';
+    }
+    else field+=c;
+  }
+  if(field!==''||row.length){ row.push(field); rows.push(row); }
+
+  const data = rows.map(r=>r.map(c=>c.trim())).filter(r=>r.some(c=>c!==''));
+  if(!data.length) return {hdr:[], cols:{}};
+
+  // Column keys must be unique: cols is keyed by name, so repeated headers
+  // would otherwise silently overwrite one another.
+  const used={};
+  const hdr = data[0].map((h,i)=>{
+    let name = h || ('Column '+(i+1));
+    while(used[name]) name = h + ' (' + (++used[h]) + ')';
+    used[name]=1; if(!used[h]) used[h]=1;
+    return name;
+  });
+
+  const cols={}; hdr.forEach(h=>cols[h]=[]);
+  for(let r=1;r<data.length;r++){
+    hdr.forEach((h,j)=>cols[h].push(data[r][j]===undefined?'':data[r][j]));
+  }
   return {hdr, cols};
 }
 const NA = new Set(['','NA','N/A','NaN','.','null','NULL']);
