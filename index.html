@@ -753,7 +753,7 @@ list(chi2 = unname(ct$statistic), df = unname(ct$parameter), p = ct$p.value, N =
     label: "One-sample proportion (Wilson CI + score test)",
     sided: true,
     dropHint: "A categorical column with exactly 2 levels. If pre-aggregated, also pick the counts column.",
-    methodNote: "<b>Effect size and interval.</b> The Wilson score interval is used for the proportion (rather than the textbook Wald interval) because it keeps coverage near the nominal level even for small samples or proportions near 0 or 1 (Brown, Cai &amp; DasGupta, 2001). Cohen's <i>h</i><sub>2</sub> is the one-proportion arcsine index, 2\u00B7arcsin\u221A<i>p&#770;</i> \u2212 2\u00B7arcsin\u221A<i>p</i>\u2080, reported at the full confidence level.",
+    methodNote: "<b>Effect size and interval.</b> The Wilson score interval is used for the proportion (rather than the textbook Wald interval) because it keeps coverage near the nominal level even for small samples or proportions near 0 or 1 (Brown, Cai &amp; DasGupta, 2001). Cohen's <i>h</i><sub>2</sub> is the one-proportion arcsine index, 2\u00B7arcsin\u221A<i>p&#770;</i> \u2212 2\u00B7arcsin\u221A<i>p</i>\u2080, reported at the full confidence level. <b>Sample-size check.</b> The console reports <i>np</i>\u2080 and <i>n</i>(1 \u2212 <i>p</i>\u2080) against the conventional threshold of 10, evaluated at the hypothesized value because the null sampling distribution is built entirely from <i>p</i>\u2080. This is reported, not enforced: the test is not switched when the check fails, since the actual Type I error rate oscillates with <i>n</i> and <i>p</i>\u2080 rather than degrading in one direction, and any substitute test would break the exact correspondence between the score test and the Wilson interval. When the check fails the console also reports the <i>exact</i> Type I error rate at that <i>n</i> and <i>p</i>\u2080 for the score, mid-p, and exact binomial tests, obtained by enumerating the binomial null rather than by simulation, so the size of the problem is visible rather than merely flagged.",
     roles: [
       { key:'outcome', kind:'group2', label:'Outcome — categorical, exactly 2 levels' },
       { key:'counts',  kind:'numeric', label:'Counts (optional) — frequency per category, for pre-aggregated data', optional:true }
@@ -769,13 +769,86 @@ o <- factor(outcome)
 if (exists("counts")) {
   w <- as.numeric(counts); n <- sum(w); x <- sum(w[as.character(o) == success])
 } else { n <- length(o); x <- sum(as.character(o) == success) }
+cat(sprintf("Success category: %s\\n\\n", success))
+e1 <- n * p0; e2 <- n * (1 - p0)
+ok <- (e1 >= 10) && (e2 >= 10)
+cat("Normal-approximation check (evaluated at p0, not p-hat)\\n")
+cat(sprintf("  n * p0       = %g * %g = %.1f   %s\\n", n, p0, e1,
+            if (e1 >= 10) ">= 10   OK" else "<  10   NOT MET"))
+cat(sprintf("  n * (1 - p0) = %g * %g = %.1f   %s\\n", n, 1 - p0, e2,
+            if (e2 >= 10) ">= 10   OK" else "<  10   NOT MET"))
+if (ok) {
+  cat("  Both conditions met.\\n\\n")
+  cat("Test used: score z-test (uncorrected). The Wilson interval below inverts this\\n")
+  cat("  same test, so the interval and the p-value always agree.\\n\\n")
+} else {
+  cat("  *** WARNING: sample-size condition NOT met. ***\\n\\n")
+  cat("Test used: score z-test (uncorrected). The normal approximation is unreliable\\n")
+  cat("  at this n and p0. The true Type I error rate oscillates and can run well above\\n")
+  cat("  or below the stated level, so read the p-value and the Wilson interval as\\n")
+  cat("  approximate.\\n\\n")
+  if (n <= 100000) {
+    xx <- 0:n; d0 <- dbinom(xx, n, p0); F0 <- pbinom(xx, n, p0)
+    a <- (1 - conf) * (1 + 1e-9)
+    zz <- (xx/n - p0) / sqrt(p0 * (1 - p0) / n)
+    lo <- F0 - 0.5 * d0; hi <- 1 - F0 + 0.5 * d0
+    oo <- order(d0); cs <- cumsum(d0[oo])
+    if (alt == "two.sided") {
+      pz <- 2 * pnorm(-abs(zz))
+      pm <- pmin(1, 2 * pmin(lo, hi))
+      pe <- cs[findInterval(d0 * (1 + 1e-7), d0[oo])]
+    } else if (alt == "less") {
+      pz <- pnorm(zz); pm <- lo; pe <- F0
+    } else {
+      pz <- pnorm(zz, lower.tail = FALSE); pm <- hi
+      pe <- pbinom(xx - 1, n, p0, lower.tail = FALSE)
+    }
+    s.z <- sum(d0[pz <= a]); s.m <- sum(d0[pm <= a]); s.e <- sum(d0[pe <= a])
+    cat(sprintf("How bad is it here? Exact Type I error rate at n = %g, p0 = %g,\\n", n, p0))
+    cat(sprintf("  against a nominal %.3f (computed by enumeration, not simulation):\\n", 1 - conf))
+    cat(sprintf("    score z-test (used here) : %.4f\\n", s.z))
+    cat(sprintf("    mid-p binomial           : %.4f\\n", s.m))
+    cat(sprintf("    exact binomial           : %.4f\\n", s.e))
+    cat(sprintf("  The Wilson interval inverts the score test, so its coverage when p = p0\\n"))
+    cat(sprintf("    is exactly 1 - %.4f = %.4f, against a nominal %.4f.\\n\\n", s.z, 1 - s.z, conf))
+  }
+}
+a.lv <- (1 - conf) * (1 + 1e-9)
+z.o <- (x/n - p0) / sqrt(p0 * (1 - p0) / n)
+d.x <- dbinom(x, n, p0); F.x <- pbinom(x, n, p0)
+if (alt == "two.sided") {
+  p.sc <- 2 * pnorm(-abs(z.o))
+  p.mp <- min(1, 2 * min(F.x - 0.5 * d.x, 1 - F.x + 0.5 * d.x))
+  dall <- dbinom(0:n, n, p0); p.ex <- sum(dall[dall <= d.x * (1 + 1e-7)])
+} else if (alt == "less") {
+  p.sc <- pnorm(z.o); p.mp <- F.x - 0.5 * d.x; p.ex <- F.x
+} else {
+  p.sc <- pnorm(z.o, lower.tail = FALSE); p.mp <- 1 - F.x + 0.5 * d.x
+  p.ex <- pbinom(x - 1, n, p0, lower.tail = FALSE)
+}
+fp <- function(p) sub("^0[.]", ".", sprintf("%.4f", p))
+dc <- function(p) if (p <= a.lv) "reject H0" else "fail to reject"
+r.sc <- p.sc <= a.lv; r.mp <- p.mp <= a.lv; r.ex <- p.ex <= a.lv
+cat(sprintf("Sensitivity check at alpha = %.3f (same data, different methods)\\n", 1 - conf))
+cat(sprintf("    score z-test (primary) : p = %s   %s\\n", fp(p.sc), dc(p.sc)))
+cat(sprintf("    mid-p binomial         : p = %s   %s\\n", fp(p.mp), dc(p.mp)))
+cat(sprintf("    exact binomial         : p = %s   %s\\n", fp(p.ex), dc(p.ex)))
+if (r.sc == r.mp && r.sc == r.ex) {
+  cat("  All three methods agree. The conclusion does not depend on the normal\\n")
+  cat("    approximation. Report the score result.\\n\\n")
+} else {
+  cat(sprintf("  *** METHODS DISAGREE at alpha = %.3f. Report the score z-test as the\\n", 1 - conf))
+  cat("      primary result, and state in your write-up that the exact and/or mid-p\\n")
+  cat("      test reaches the opposite decision. This is not an error: it means the\\n")
+  cat("      p-value is sitting on the threshold. Treat the finding as borderline,\\n")
+  cat("      not established. Do not substitute whichever p-value you prefer. ***\\n\\n")
+}
 ptst <- prop.test(x, n, p = p0, correct = FALSE, conf.level = conf, alternative = alt)
 phat <- x / n
 zstat <- sign(phat - p0) * sqrt(unname(ptst$statistic))
 h2 <- 2*asin(sqrt(phat)) - 2*asin(sqrt(p0))
 z.c <- qnorm(1 - (1-conf)/2); se.h2 <- sqrt(1/n)
 h2.low <- h2 - z.c*se.h2; h2.up <- h2 + z.c*se.h2
-cat(sprintf("Success category: %s\\n\\n", success))
 print(ptst)
 cat(sprintf("Cohen's h2 (arcsine vs p0) = %.3f, %.0f%% CI [%.3f, %.3f]\\n", h2, conf*100, h2.low, h2.up))
 c(x=x, n=n, phat=phat, z=zstat, p=ptst$p.value, cil=ptst$conf.int[1], ciu=ptst$conf.int[2], p0=p0,
