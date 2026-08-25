@@ -196,8 +196,20 @@
 import { WebR } from 'https://webr.r-wasm.org/latest/webr.mjs';
 
 /* ============================ shared formatters ============================ */
-const nz = (x,d=2)=>{ const s=(x<0?'-':'')+Math.abs(x).toFixed(d); return s.replace(/^(-?)0\./,'$1.'); };
-const f2 = (x,d=2)=> Number(x).toFixed(d);
+// APA 7 (6.36): keep the leading zero when a statistic CAN reach 1 in absolute
+// value; drop it only when it cannot. f2 = keeps it, nz/nzsig = drop it.
+// MINUS: set to '\u2212' for a typographic minus sign in the copied output.
+const MINUS = '-';
+const noNegZero = s => /^-0(\.0*)?$/.test(s) ? s.slice(1) : s;   // never print -0.00
+const f2 = (x,d=2)=>{ const v=Number(x); if(!Number.isFinite(v)) return String(x);
+  return noNegZero(v.toFixed(d)).replace(/^-/, MINUS); };
+const nz = (x,d=2)=>{ const v=Number(x); if(!Number.isFinite(v)) return String(x);
+  const s = noNegZero((v<0?'-':'')+Math.abs(v).toFixed(d));
+  return s.replace(/^(-?)0\./,'$1.').replace(/^-/, MINUS); };
+// df: integer when the df is an integer (one-sample, paired, chi-square),
+// two decimals when it is fractional (Welch, Brunner-Munzel).
+const fdf = (x)=>{ const v=Number(x); if(!Number.isFinite(v)) return String(x);
+  return Math.abs(v-Math.round(v)) < 1e-8 ? String(Math.round(v)) : v.toFixed(2); };
 const pct = (c)=> Math.round(Number(c)*100)+'%';
 // adaptive precision: 2 decimals normally, but keep ~2 significant figures for very small magnitudes
 const fsig = (x)=>{ const v=Number(x); if(!Number.isFinite(v)) return String(x);
@@ -210,7 +222,7 @@ const nzsig = (x)=>{ const v=Number(x); if(!Number.isFinite(v)) return String(x)
   const a=Math.abs(v);
   let s; if(a>=0.10) s=a.toFixed(2);
   else { const d=Math.min(8, -Math.floor(Math.log10(a))+1); s=a.toFixed(d); }
-  return (v<0?'-':'') + s.replace(/^0/,''); };
+  return noNegZero((v<0?'-':'') + s).replace(/^0/,'').replace(/^-0/, MINUS).replace(/^-/, MINUS); };
 const pFmt = p => p < .001 ? '< .001' : '= ' + nz(p,3);
 
 /* ============================ APA table builder ============================ */
@@ -459,8 +471,8 @@ c(t=unname(tt$statistic), df=unname(tt$parameter), p=tt$p.value,
           [{t:l2},{t:R.n2,num:true},{t:f2(R.m2),num:true},{t:f2(R.s2),num:true}]
         ],
         note:{
-          html:`<i>Note.</i> Welch's <i>t</i>(${f2(R.df)}) = ${f2(R.t)}, <i>p</i> ${pFmt(R.p)}, ${sidedTxt(ctx.env.alt)}. Mean difference (${l1} &minus; ${l2}) = ${f2(R.md)}, ${pct(ctx.conf)} CI [${fci(R.cil)}, ${fci(R.ciu)}]. Hedges' <i>g*</i><sub>s</sub> = ${nz(R.g)}, ${pct(ctx.conf)} CI [${nz(R.gl)}, ${nz(R.gu)}].`,
-          plain:`Note. Welch's t(${f2(R.df)}) = ${f2(R.t)}, p ${pFmt(R.p)}, ${sidedTxt(ctx.env.alt)}. Mean difference (${l1} - ${l2}) = ${f2(R.md)}, ${pct(ctx.conf)} CI [${fci(R.cil)}, ${fci(R.ciu)}]. Hedges' g*s = ${nz(R.g)}, ${pct(ctx.conf)} CI [${nz(R.gl)}, ${nz(R.gu)}].`
+          html:`<i>Note.</i> Welch's <i>t</i>(${fdf(R.df)}) = ${f2(R.t)}, <i>p</i> ${pFmt(R.p)}, ${sidedTxt(ctx.env.alt)}. Mean difference (${l1} &minus; ${l2}) = ${f2(R.md)}, ${pct(ctx.conf)} CI [${fci(R.cil)}, ${fci(R.ciu)}]. Hedges' <i>g*</i><sub>s</sub> = ${f2(R.g)}, ${pct(ctx.conf)} CI [${f2(R.gl)}, ${f2(R.gu)}].`,
+          plain:`Note. Welch's t(${fdf(R.df)}) = ${f2(R.t)}, p ${pFmt(R.p)}, ${sidedTxt(ctx.env.alt)}. Mean difference (${l1} - ${l2}) = ${f2(R.md)}, ${pct(ctx.conf)} CI [${fci(R.cil)}, ${fci(R.ciu)}]. Hedges' g*s = ${f2(R.g)}, ${pct(ctx.conf)} CI [${f2(R.gl)}, ${f2(R.gu)}].`
         }
       });
     }
@@ -506,8 +518,8 @@ c(t=t.obs, df=df, p=tt$p.value, md=md, cil=tt$conf.int[1], ciu=tt$conf.int[2],
           [{t:post},{t:R.n,num:true},{t:f2(R.mpost),num:true},{t:f2(R.sdpost),num:true}]
         ],
         note:{
-          html:`<i>Note.</i> Paired <i>t</i>(${f2(R.df)}) = ${f2(R.t)}, <i>p</i> ${pFmt(R.p)}, ${sidedTxt(ctx.env.alt)}. Mean difference (${pre} &minus; ${post}) = ${f2(R.md)}, ${pct(ctx.conf)} CI [${fci(R.cil)}, ${fci(R.ciu)}]. Hedges' <i>g</i><sub>z</sub> = ${nz(R.g)}, ${pct(ctx.conf)} CI [${nz(R.gl)}, ${nz(R.gu)}].`,
-          plain:`Note. Paired t(${f2(R.df)}) = ${f2(R.t)}, p ${pFmt(R.p)}, ${sidedTxt(ctx.env.alt)}. Mean difference (${pre} - ${post}) = ${f2(R.md)}, ${pct(ctx.conf)} CI [${fci(R.cil)}, ${fci(R.ciu)}]. Hedges' g_z = ${nz(R.g)}, ${pct(ctx.conf)} CI [${nz(R.gl)}, ${nz(R.gu)}].`
+          html:`<i>Note.</i> Paired <i>t</i>(${fdf(R.df)}) = ${f2(R.t)}, <i>p</i> ${pFmt(R.p)}, ${sidedTxt(ctx.env.alt)}. Mean difference (${pre} &minus; ${post}) = ${f2(R.md)}, ${pct(ctx.conf)} CI [${fci(R.cil)}, ${fci(R.ciu)}]. Hedges' <i>g</i><sub>z</sub> = ${f2(R.g)}, ${pct(ctx.conf)} CI [${f2(R.gl)}, ${f2(R.gu)}].`,
+          plain:`Note. Paired t(${fdf(R.df)}) = ${f2(R.t)}, p ${pFmt(R.p)}, ${sidedTxt(ctx.env.alt)}. Mean difference (${pre} - ${post}) = ${f2(R.md)}, ${pct(ctx.conf)} CI [${fci(R.cil)}, ${fci(R.ciu)}]. Hedges' g_z = ${f2(R.g)}, ${pct(ctx.conf)} CI [${f2(R.gl)}, ${f2(R.gu)}].`
         }
       });
     }
@@ -565,8 +577,8 @@ c(stat=stat, df=df, p=p, phat=pst, cil=ci[1], ciu=ci[2],
           [{t:l2},{t:R.n2,num:true},{t:f2(R.md2),num:true}]
         ],
         note:{
-          html:`<i>Note.</i> Brunner-Munzel <i>W</i>(${f2(R.df)}) = ${f2(R.stat)}, <i>p</i> ${pFmt(R.p)}, ${sidedTxt(ctx.env.alt)}. Relative effect <i>p&#770;</i> = ${nz(R.phat)}, ${pct(ctx.conf)} CI [${nz(R.cil)}, ${nz(R.ciu)}] \u2014 the estimated probability that a randomly chosen ${resp} from ${l2} exceeds one from ${l1} (.50 indicates no tendency). Mdn = median.`,
-          plain:`Note. Brunner-Munzel W(${f2(R.df)}) = ${f2(R.stat)}, p ${pFmt(R.p)}, ${sidedTxt(ctx.env.alt)}. Relative effect p-hat = ${nz(R.phat)}, ${pct(ctx.conf)} CI [${nz(R.cil)}, ${nz(R.ciu)}] - the estimated probability that a randomly chosen ${resp} from ${l2} exceeds one from ${l1} (.50 indicates no tendency). Mdn = median.`
+          html:`<i>Note.</i> Brunner-Munzel <i>W</i>(${fdf(R.df)}) = ${f2(R.stat)}, <i>p</i> ${pFmt(R.p)}, ${sidedTxt(ctx.env.alt)}. Relative effect <i>p&#770;</i> = ${nz(R.phat)}, ${pct(ctx.conf)} CI [${nz(R.cil)}, ${nz(R.ciu)}] \u2014 the estimated probability that a randomly chosen ${resp} from ${l2} exceeds one from ${l1} (.50 indicates no tendency). Mdn = median.`,
+          plain:`Note. Brunner-Munzel W(${fdf(R.df)}) = ${f2(R.stat)}, p ${pFmt(R.p)}, ${sidedTxt(ctx.env.alt)}. Relative effect p-hat = ${nz(R.phat)}, ${pct(ctx.conf)} CI [${nz(R.cil)}, ${nz(R.ciu)}] - the estimated probability that a randomly chosen ${resp} from ${l2} exceeds one from ${l1} (.50 indicates no tendency). Mdn = median.`
         }
       });
     }
@@ -611,8 +623,8 @@ c(t=t.obs, df=df, p=tt$p.value, m=m, s=s, n=n, mu0=mu0,
           [{t:resp},{t:R.n,num:true},{t:f2(R.m),num:true},{t:f2(R.s),num:true}]
         ],
         note:{
-          html:`<i>Note.</i> One-sample <i>t</i>(${f2(R.df)}) = ${f2(R.t)}, <i>p</i> ${pFmt(R.p)}, ${sidedTxt(ctx.env.alt)}, test value = ${mu}. ${pct(ctx.conf)} CI for the mean [${fci(R.cil)}, ${fci(R.ciu)}]. Hedges' <i>g</i> = ${nz(R.g)}, ${pct(ctx.conf)} CI [${nz(R.gl)}, ${nz(R.gu)}].`,
-          plain:`Note. One-sample t(${f2(R.df)}) = ${f2(R.t)}, p ${pFmt(R.p)}, ${sidedTxt(ctx.env.alt)}, test value = ${mu}. ${pct(ctx.conf)} CI for the mean [${fci(R.cil)}, ${fci(R.ciu)}]. Hedges' g = ${nz(R.g)}, ${pct(ctx.conf)} CI [${nz(R.gl)}, ${nz(R.gu)}].`
+          html:`<i>Note.</i> One-sample <i>t</i>(${fdf(R.df)}) = ${f2(R.t)}, <i>p</i> ${pFmt(R.p)}, ${sidedTxt(ctx.env.alt)}, test value = ${mu}. ${pct(ctx.conf)} CI for the mean [${fci(R.cil)}, ${fci(R.ciu)}]. Hedges' <i>g</i> = ${f2(R.g)}, ${pct(ctx.conf)} CI [${f2(R.gl)}, ${f2(R.gu)}].`,
+          plain:`Note. One-sample t(${fdf(R.df)}) = ${f2(R.t)}, p ${pFmt(R.p)}, ${sidedTxt(ctx.env.alt)}, test value = ${mu}. ${pct(ctx.conf)} CI for the mean [${fci(R.cil)}, ${fci(R.ciu)}]. Hedges' g = ${f2(R.g)}, ${pct(ctx.conf)} CI [${f2(R.gl)}, ${f2(R.gu)}].`
         }
       });
     }
@@ -733,8 +745,8 @@ list(chi2 = unname(ct$statistic), df = unname(ct$parameter), p = ct$p.value, N =
         const warnH = sparse ? ` Some expected counts &lt; 5; interpret with caution.` : '';
         const warnP = sparse ? ` Some expected counts < 5; interpret with caution.` : '';
         const note = {
-          html:`<i>Note.</i> \u03C7\u00B2(${R.df[0]}, <i>N</i> = ${R.N[0]}) = ${f2(R.chi2[0])}, <i>p</i> ${pFmt(R.p[0])}. Cohen's <i>w</i> = ${nz(R.w[0])}, ${ciPct}% CI [${nz(R.cil[0])}, ${nz(R.ciu[0])}].${warnH}`,
-          plain:`Note. chi-square(${R.df[0]}, N = ${R.N[0]}) = ${f2(R.chi2[0])}, p ${pFmt(R.p[0])}. Cohen's w = ${nz(R.w[0])}, ${ciPct}% CI [${nz(R.cil[0])}, ${nz(R.ciu[0])}].${warnP}`
+          html:`<i>Note.</i> \u03C7\u00B2(${R.df[0]}, <i>N</i> = ${R.N[0]}) = ${f2(R.chi2[0])}, <i>p</i> ${pFmt(R.p[0])}. Cohen's <i>w</i> = ${f2(R.w[0])}, ${ciPct}% CI [${f2(R.cil[0])}, ${f2(R.ciu[0])}].${warnH}`,
+          plain:`Note. chi-square(${R.df[0]}, N = ${R.N[0]}) = ${f2(R.chi2[0])}, p ${pFmt(R.p[0])}. Cohen's w = ${f2(R.w[0])}, ${ciPct}% CI [${f2(R.cil[0])}, ${f2(R.ciu[0])}].${warnP}`
         };
         const out = buildAPA({ title:`Goodness-of-Fit Test for ${varName}`, headers, rows, note });
         document.getElementById('console').textContent = consoleText;
@@ -1339,8 +1351,8 @@ list(lv = lv, ns = ns, ms = ms, ss = ss, k = k,
           {t:String(g)},{t:R.ns[i],num:true},{t:f2(R.ms[i]),num:true},{t:f2(R.ss[i]),num:true}
         ]);
         const note = {
-          html:`<i>Note.</i> Welch's <i>F</i>(${R.df1[0]}, ${f2(R.df2[0])}) = ${f2(R.f[0])}, <i>p</i> ${pFmt(R.p[0])}. Adjusted \u03C9\u00B2 = ${nz(R.om[0])}, ${ciPct}% CI [${nz(R.oml[0])}, ${nz(R.omu[0])}].`,
-          plain:`Note. Welch's F(${R.df1[0]}, ${f2(R.df2[0])}) = ${f2(R.f[0])}, p ${pFmt(R.p[0])}. Adjusted omega-squared = ${nz(R.om[0])}, ${ciPct}% CI [${nz(R.oml[0])}, ${nz(R.omu[0])}].`
+          html:`<i>Note.</i> Welch's <i>F</i>(${R.df1[0]}, ${fdf(R.df2[0])}) = ${f2(R.f[0])}, <i>p</i> ${pFmt(R.p[0])}. Adjusted \u03C9\u00B2 = ${nz(R.om[0])}, ${ciPct}% CI [${nz(R.oml[0])}, ${nz(R.omu[0])}].`,
+          plain:`Note. Welch's F(${R.df1[0]}, ${fdf(R.df2[0])}) = ${f2(R.f[0])}, p ${pFmt(R.p[0])}. Adjusted omega-squared = ${nz(R.om[0])}, ${ciPct}% CI [${nz(R.oml[0])}, ${nz(R.omu[0])}].`
         };
         const main = buildAPA({
           title:`Descriptive Statistics and Welch's ANOVA for ${resp} by ${grp}`,
@@ -1791,8 +1803,8 @@ list(p = res$p.value, mc = mc, k = k, N = N, w = w,
         const mc = R.mc[0]===1;
         const mcTxt = mc ? ` The p-value is from a seeded Monte Carlo simulation (100,000 trials; exact enumeration infeasible at this n) and is reproducible.` : '';
         const note = {
-          html:`<i>Note.</i> Exact multinomial test, <i>N</i> = ${R.N[0]}, <i>p</i> ${pFmt(R.p[0])}. Cohen's <i>w</i> = ${nz(R.w[0])} (descriptive).${mcTxt}`,
-          plain:`Note. Exact multinomial test, N = ${R.N[0]}, p ${pFmt(R.p[0])}. Cohen's w = ${nz(R.w[0])} (descriptive).${mcTxt}`
+          html:`<i>Note.</i> Exact multinomial test, <i>N</i> = ${R.N[0]}, <i>p</i> ${pFmt(R.p[0])}. Cohen's <i>w</i> = ${f2(R.w[0])} (descriptive).${mcTxt}`,
+          plain:`Note. Exact multinomial test, N = ${R.N[0]}, p ${pFmt(R.p[0])}. Cohen's w = ${f2(R.w[0])} (descriptive).${mcTxt}`
         };
         const out = buildAPA({ title:`Exact Multinomial Goodness-of-Fit Test for ${varName}`, headers, rows, note });
         document.getElementById('console').textContent = consoleText;
@@ -2029,7 +2041,7 @@ function updateEdaControls(){
   document.getElementById('altControls').classList.toggle('hidden', !(t && t.sided));
 }
 function currentConf(){ return Number(document.getElementById('confSel').value); }
-const fci = x => Number.isFinite(Number(x)) ? f2(x) : (Number(x)<0 ? '\u2212\u221E' : '\u221E');
+const fci = x => Number.isFinite(Number(x)) ? f2(x) : (Number(x)<0 ? MINUS+'\u221E' : '\u221E');
 const sidedTxt = a => a==='less' ? 'one-sided (less)' : a==='greater' ? 'one-sided (greater)' : 'two-sided';
 // Both EDA plot options redraw from the data already in R, with no re-upload.
 async function redrawEda(doneMsg){
