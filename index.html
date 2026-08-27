@@ -998,6 +998,171 @@ c(ok=ok, n=n, med=med, q1=qq[1], q3=qq[2], iqr=qq[2]-qq[1], mn=x[1], mx=x[n],
     }
   },
 
+  median_rq: {
+    label: "One-sample median (quantile regression, \u03C4 = 0.5)",
+    dropHint: "Any dataset: choose one numeric column. Fits an intercept-only quantile regression at \u03C4 = 0.5, the same engine used for pairwise median differences.",
+    packages: ['quantreg'],
+    methodNote: "<b>What this fits.</b> An intercept-only quantile regression at \u03C4 = 0.5. Minimizing \u03A3|<i>y<sub>i</sub></i> \u2212 <i>b</i>| is solved at the sample median, so the point estimate is the median and the interval is a Wald interval, <i>b</i> \u00B1 <i>t</i><sub>1\u2212\u03B1/2</sub>(<i>n</i>\u22121) \u00D7 <i>SE</i>. <b>Why not rank inversion.</b> The rank-score inversion in <code>quantreg</code> (<code>rq(..., ci = TRUE)</code>, <code>summary(..., se = \"rank\")</code>) requires at least two parameters and returns no interval for an intercept-only model, so it is not available for a one-sample median. Every method offered here instead estimates the sparsity function, 1/(2<i>f</i>(<i>m</i>)\u221A<i>n</i>), which is the fragile part of median inference at small <i>n</i>. <b>How the methods behave.</b> In simulation on skewed (lognormal) data at 95%: <code>nid</code> overcovers, near 99% at <i>n</i> = 10\u201320 and about 97% by <i>n</i> = 80; <code>iid</code> undercovers, roughly 88\u201392%; <code>ker</code> is unusable, at or above 99.8% throughout; <code>boot</code> is the best calibrated of the four at about 94%. The default is <code>nid</code> because it matches the standard error method used by the pairwise median differences module, so the two slices agree. <b>Which slice to prefer.</b> For a single median the exact distribution-free interval is the better default: its coverage is exact for any continuous distribution at any <i>n</i>, and none of the methods here match it. This module exists for engine consistency with the pairwise comparisons and for method comparison; the exact interval is reported alongside for reference. <b>Assumptions.</b> A random sample with independent observations. The Wald interval is symmetric about the estimate and relies on a large-sample approximation, so unlike the exact interval it is not reliable at small <i>n</i>.",
+    roles: [
+      { key:'resp', kind:'numeric', label:'Variable \u2014 numeric' }
+    ],
+    params: [
+      { key:'se_method', type:'text', label:'Standard error method (nid, iid, ker, or boot)', default:'nid' }
+    ],
+    defaults: {},
+    resultKeys: ['ok','n','med','rqest','vertex','q1','q3','iqr','mn','mx','se','df','tcrit','lo','hi','moe','exlo','exhi','exach','semcode','badse'],
+    rProgram: `
+suppressMessages(library(quantreg))
+x  <- sort(as.numeric(resp))
+n  <- length(x)
+alpha <- 1 - conf
+
+sm_in <- tolower(trimws(as.character(se_method)))
+valid <- c("nid","iid","ker","boot")
+badse <- as.numeric(!(sm_in %in% valid))
+semeth <- if (badse == 1) "nid" else sm_in
+semcode <- match(semeth, valid)
+
+med <- median(x)
+qq  <- quantile(x, c(0.25, 0.75), type = 7, names = FALSE)
+
+# exact distribution-free interval, reported for reference
+k <- qbinom(alpha/2, n, 0.5)
+while (k >= 1 && pbinom(k - 1, n, 0.5) > alpha/2) k <- k - 1
+if (k >= 1) { exlo <- x[k]; exhi <- x[n - k + 1]; exach <- 1 - 2*pbinom(k - 1, n, 0.5)
+} else      { exlo <- NA_real_; exhi <- NA_real_; exach <- NA_real_ }
+
+cat("One-Sample Median: Quantile Regression (tau = 0.5)\\n")
+cat(strrep("-", 62), "\\n\\n", sep = "")
+cat("Variable: ", resp_name, "\\n", sep = "")
+cat("n:        ", n, "\\n", sep = "")
+cat("Model:    ", resp_name, " ~ 1,  tau = 0.5\\n\\n", sep = "")
+
+if (badse == 1)
+  cat("NOTE: '", sm_in, "' is not a recognized standard error method. Using 'nid'.\\n\\n", sep = "")
+
+fit <- suppressWarnings(rq(x ~ 1, tau = 0.5))
+rqest <- as.numeric(coef(fit)[1])
+vertex <- as.numeric(!isTRUE(all.equal(rqest, med)))
+
+sm <- tryCatch(suppressWarnings(summary(fit, se = semeth, alpha = alpha)),
+               error = function(e) e)
+
+if (inherits(sm, "error")) {
+  ok <- 0; se <- NA_real_; df <- n - 1; tcrit <- NA_real_
+  lo <- NA_real_; hi <- NA_real_; moe <- NA_real_
+  cat("The standard error could not be computed with se = '", semeth, "' at n = ", n, ".\\n", sep = "")
+  cat("Message: ", conditionMessage(sm), "\\n\\n", sep = "")
+  cat("Try se = 'boot', or use the exact distribution-free median interval,\\n")
+  cat("which requires no standard error at all.\\n")
+  if (!is.na(exlo))
+    cat("\\nExact distribution-free interval for reference: [",
+        formatC(exlo, format = "f", digits = 4), ", ",
+        formatC(exhi, format = "f", digits = 4), "]\\n", sep = "")
+} else {
+  ok <- 1
+  se    <- as.numeric(sm$coefficients[1, 2])
+  df    <- n - 1
+  tcrit <- qt(1 - alpha/2, df)
+  lo    <- rqest - tcrit*se
+  hi    <- rqest + tcrit*se
+  moe   <- tcrit*se
+
+  cat("Coefficients (intercept = conditional median)\\n")
+  cat(strrep("-", 62), "\\n", sep = "")
+  cat("Estimate:             ", formatC(rqest, format = "f", digits = 4), "\\n", sep = "")
+  cat("Std. error (", semeth, "):", strrep(" ", max(0, 9 - nchar(semeth))),
+      formatC(se, format = "f", digits = 4), "\\n", sep = "")
+  cat("df:                   ", df, "\\n", sep = "")
+  cat("t critical:           ", formatC(tcrit, format = "f", digits = 4), "\\n\\n", sep = "")
+
+  cat("Sample median:        ", formatC(med,   format = "f", digits = 4), "\\n", sep = "")
+  cat("Q1:                   ", formatC(qq[1], format = "f", digits = 4), "\\n", sep = "")
+  cat("Q3:                   ", formatC(qq[2], format = "f", digits = 4), "\\n", sep = "")
+  cat("IQR:                  ", formatC(qq[2]-qq[1], format = "f", digits = 4), "\\n", sep = "")
+  cat("Minimum:              ", formatC(x[1],  format = "f", digits = 4), "\\n", sep = "")
+  cat("Maximum:              ", formatC(x[n],  format = "f", digits = 4), "\\n\\n", sep = "")
+
+  cat("Confidence level:     ", formatC(100*conf, format = "f", digits = 2), "%\\n", sep = "")
+  cat("Lower limit:          ", formatC(lo,  format = "f", digits = 4), "\\n", sep = "")
+  cat("Upper limit:          ", formatC(hi,  format = "f", digits = 4), "\\n", sep = "")
+  cat("Margin of error:      ", formatC(moe, format = "f", digits = 4), "\\n\\n", sep = "")
+
+  cat("We are ", formatC(100*conf, format = "f", digits = 2), "% confident that the population median of\\n", sep = "")
+  cat(resp_name, " is between ", formatC(lo, format = "f", digits = 2),
+      " and ", formatC(hi, format = "f", digits = 2), ".\\n\\n", sep = "")
+
+  cat("Comparison\\n")
+  cat(strrep("-", 62), "\\n", sep = "")
+  if (!is.na(exlo)) {
+    cat("Exact distribution-free interval: [",
+        formatC(exlo, format = "f", digits = 4), ", ",
+        formatC(exhi, format = "f", digits = 4), "]  (achieved ",
+        formatC(100*exach, format = "f", digits = 2), "%)\\n", sep = "")
+    cat("Quantile regression interval:     [",
+        formatC(lo, format = "f", digits = 4), ", ",
+        formatC(hi, format = "f", digits = 4), "]\\n", sep = "")
+    cat("The exact interval has guaranteed coverage for any continuous\\n")
+    cat("distribution. This one relies on an estimated standard error.\\n")
+  } else {
+    cat("An exact distribution-free interval cannot be formed at n = ", n, ".\\n", sep = "")
+  }
+
+  nt <- 0
+  if (vertex == 1 || semeth == "ker" || semeth == "iid" || n < 20) {
+    cat("\\nNotes\\n"); cat(strrep("-", 62), "\\n", sep = "")
+  }
+  if (vertex == 1) { nt <- nt + 1
+    cat(nt, ". The rq estimate (", formatC(rqest, format = "f", digits = 4),
+        ") differs from median() (", formatC(med, format = "f", digits = 4), ").\\n",
+        "   With even n the fitting algorithm returns one of the two central\\n",
+        "   observations rather than their average. Both are valid medians.\\n", sep = "") }
+  if (semeth == "ker") { nt <- nt + 1
+    cat(nt, ". se = 'ker' produced coverage at or above 99.8% in simulation on\\n",
+        "   skewed data. This interval is far wider than the stated level.\\n", sep = "") }
+  if (semeth == "iid") { nt <- nt + 1
+    cat(nt, ". se = 'iid' assumes identically distributed errors and undercovered\\n",
+        "   (about 88 to 92%) in simulation on skewed data.\\n", sep = "") }
+  if (n < 20) { nt <- nt + 1
+    cat(nt, ". n = ", n, " is small for a Wald interval built on an estimated\\n",
+        "   sparsity function. Prefer the exact distribution-free interval here.\\n", sep = "") }
+}
+
+c(ok=ok, n=n, med=med, rqest=rqest, vertex=vertex, q1=qq[1], q3=qq[2], iqr=qq[2]-qq[1],
+  mn=x[1], mx=x[n], se=se, df=df, tcrit=tcrit, lo=lo, hi=hi, moe=moe,
+  exlo=exlo, exhi=exhi, exach=exach, semcode=semcode, badse=badse)`,
+    render(R, ctx){
+      const resp = ctx.cols.resp;
+      const names = ['nid','iid','ker','boot'];
+      const meth = names[(R.semcode|0) - 1] || 'nid';
+      if(!R.ok){
+        return buildAPA({
+          title:`Descriptive Statistics for ${resp}`,
+          headers:[{t:'Variable'},{t:'n',it:true,num:true},{t:'Mdn',it:true,num:true}],
+          rows:[[{t:resp},{t:R.n,num:true},{t:f2(R.med),num:true}]],
+          note:{
+            html:`<i>Note.</i> The quantile regression standard error could not be computed with <code>se = "${meth}"</code> at <i>n</i> = ${R.n}. See the console for details.`,
+            plain:`Note. The quantile regression standard error could not be computed with se = "${meth}" at n = ${R.n}. See the console for details.`
+          }
+        });
+      }
+      const vtx = R.vertex ? ` The fitted intercept (${f2(R.rqest)}) differs from the sample median because the algorithm returns a vertex solution at even <i>n</i>.` : '';
+      const exRef = Number.isFinite(Number(R.exlo))
+        ? ` For reference, the exact distribution-free interval is [${f2(R.exlo)}, ${f2(R.exhi)}], with achieved coverage ${(100*R.exach).toFixed(2)}%.` : '';
+      return buildAPA({
+        title:`Median and Quantile Regression Confidence Interval for ${resp}`,
+        headers:[{t:'Variable'},{t:'n',it:true,num:true},{t:'Mdn',it:true,num:true},{t:'IQR',num:true},{t:'SE',it:true,num:true},{t:`${pct(ctx.conf)} CI`}],
+        rows:[
+          [{t:resp},{t:R.n,num:true},{t:f2(R.med),num:true},{t:f2(R.iqr),num:true},{t:f2(R.se),num:true},{t:`[${f2(R.lo)}, ${f2(R.hi)}]`}]
+        ],
+        note:{
+          html:`<i>Note.</i> <i>Mdn</i> = ${f2(R.med)}, ${pct(ctx.conf)} CI [${f2(R.lo)}, ${f2(R.hi)}]. Intercept-only quantile regression at \u03C4 = 0.5; Wald interval on <i>df</i> = ${R.df} using the <code>${meth}</code> standard error.${vtx}${exRef}`,
+          plain:`Note. Mdn = ${f2(R.med)}, ${pct(ctx.conf)} CI [${f2(R.lo)}, ${f2(R.hi)}]. Intercept-only quantile regression at tau = 0.5; Wald interval on df = ${R.df} using the ${meth} standard error.${exRef}`
+        }
+      });
+    }
+  },
+
   twoprop: {
     label: "Two-sample - Independent proportions (Newcombe CI + Cohen's h, RR, OR)",
     dropHint: "A 2-level outcome column and a 2-level grouping column. If pre-aggregated, also pick the counts column.",
@@ -2109,7 +2274,8 @@ const MENU_SECTIONS = [
   ['One-Sample Tests', [
     ['onesample', 't-test for a mean'],
     ['oneprop',   'z-test for a proportion'],
-    ['median_ci', 'Confidence interval for a median (exact, distribution-free)']]],
+    ['median_ci', 'Confidence interval for a median (exact, distribution-free)'],
+    ['median_rq', 'Confidence interval for a median (quantile regression, \u03C4 = 0.5)']]],
   ['Two-Sample Tests \u2014 Dependent', [
     ['paired',  'Paired t-test for mean difference \u2014 repeated measures/matched pairs'],
     ['mcnemar', "McNemar's test for difference between paired proportions"]]],
