@@ -879,6 +879,125 @@ c(x=x, n=n, phat=phat, z=zstat, p=ptst$p.value, cil=ptst$conf.int[1], ciu=ptst$c
     }
   },
 
+  median_ci: {
+    label: "One-sample median (exact distribution-free CI)",
+    dropHint: "Any dataset: choose one numeric column. No hypothesized value is needed \u2014 this estimates the median rather than testing it.",
+    methodNote: "<b>Why this interval.</b> The endpoints are two observed data values: the <i>k</i>th smallest and the <i>k</i>th largest, where <i>k</i> is the largest integer with <span style=\"font-style:italic\">P</span>(<i>X</i> \u2264 <i>k</i> \u2212 1) \u2264 \u03B1/2 for <i>X</i> ~ Binomial(<i>n</i>, .5). This inverts the sign test, so its coverage is <i>exact for any continuous distribution</i>, however skewed, at any sample size \u2014 no normality of the sampling distribution is required, unlike the interval for a mean. <b>Why the achieved level differs.</b> Because the endpoints must land on observed values, only certain confidence levels are attainable at a given <i>n</i>; the interval delivers the smallest achievable level at or above the one you requested, so it is mildly conservative and the achieved level rises and falls with <i>n</i> rather than sitting flat. Both levels are reported. <b>Minimum sample size.</b> A 95% interval needs <i>n</i> \u2265 6, a 90% interval <i>n</i> \u2265 5, and a 99% interval <i>n</i> \u2265 8; below that even the smallest and largest observations do not capture the median often enough. <b>What it does and does not estimate.</b> This is an interval for the <i>median</i>. The Wilcoxon signed-rank interval, often offered as the nonparametric alternative, estimates the <i>pseudomedian</i>, which equals the median only when the distribution is symmetric \u2014 the two differ under exactly the skew that motivates using a median in the first place. The Brunner-Munzel and MCTP modules estimate stochastic superiority, not location, so they answer a different question and are not substitutes. <b>Assumptions.</b> A random sample with independent observations, and a variable measured on a continuous scale. Repeated values make the interval more conservative than the achieved level suggests; the console flags this when the data are coarse.",
+    roles: [
+      { key:'resp', kind:'numeric', label:'Variable \u2014 numeric' }
+    ],
+    defaults: {},
+    resultKeys: ['ok','n','med','q1','q3','iqr','mn','mx','k','lo','hi','moe','ach','ndist','tiesmed','zw','nmin'],
+    rProgram: `
+x <- sort(as.numeric(resp))
+n <- length(x)
+alpha <- 1 - conf
+
+# Largest k with pbinom(k - 1, n, 0.5) <= alpha/2. qbinom returns the smallest q
+# with pbinom(q, n, 0.5) >= alpha/2, so step down until the strict tail holds.
+k <- qbinom(alpha/2, n, 0.5)
+while (k >= 1 && pbinom(k - 1, n, 0.5) > alpha/2) k <- k - 1
+nmin <- ceiling(log(alpha/2)/log(0.5))
+
+med <- median(x)
+qq  <- quantile(x, c(0.25, 0.75), type = 7, names = FALSE)
+ndist <- length(unique(x)); tiesmed <- sum(x == med)
+
+cat("One-Sample Median: Exact Distribution-Free Confidence Interval\\n")
+cat(strrep("-", 62), "\\n\\n", sep = "")
+cat("Variable: ", resp_name, "\\n", sep = "")
+cat("n:        ", n, "\\n\\n", sep = "")
+
+if (k < 1) {
+  ok <- 0; lo <- NA_real_; hi <- NA_real_; ach <- NA_real_; moe <- NA_real_; zw <- 0
+  cat("A ", format(100*conf, digits = 4), "% interval cannot be formed with n = ", n, ".\\n", sep = "")
+  cat("At least n = ", nmin, " observations are required: with fewer, even the\\n", sep = "")
+  cat("smallest and largest observations do not capture the median often enough.\\n", sep = "")
+} else {
+  ok <- 1
+  lo <- x[k]; hi <- x[n - k + 1]
+  ach <- 1 - 2*pbinom(k - 1, n, 0.5)
+  moe <- (hi - lo)/2
+  zw <- as.numeric(isTRUE(all.equal(lo, hi)))
+
+  cat("Median:               ", formatC(med,   format = "f", digits = 4), "\\n", sep = "")
+  cat("Q1:                   ", formatC(qq[1], format = "f", digits = 4), "\\n", sep = "")
+  cat("Q3:                   ", formatC(qq[2], format = "f", digits = 4), "\\n", sep = "")
+  cat("IQR:                  ", formatC(qq[2]-qq[1], format = "f", digits = 4), "\\n", sep = "")
+  cat("Minimum:              ", formatC(x[1],  format = "f", digits = 4), "\\n", sep = "")
+  cat("Maximum:              ", formatC(x[n],  format = "f", digits = 4), "\\n\\n", sep = "")
+
+  cat("Requested confidence: ", formatC(100*conf, format = "f", digits = 2), "%\\n", sep = "")
+  cat("Achieved confidence:  ", formatC(100*ach,  format = "f", digits = 2), "%\\n", sep = "")
+  cat("Endpoints:            order statistics ", k, " and ", n - k + 1, " of ", n, "\\n", sep = "")
+  cat("Lower limit:          ", formatC(lo,  format = "f", digits = 4), "\\n", sep = "")
+  cat("Upper limit:          ", formatC(hi,  format = "f", digits = 4), "\\n", sep = "")
+  cat("Margin of error:      ", formatC(moe, format = "f", digits = 4), "\\n\\n", sep = "")
+
+  cat("We are ", formatC(100*ach, format = "f", digits = 2), "% confident that the population median of\\n", sep = "")
+  cat(resp_name, " is between ", formatC(lo, format = "f", digits = 2),
+      " and ", formatC(hi, format = "f", digits = 2), ".\\n\\n", sep = "")
+
+  cat("Assumptions\\n")
+  cat(strrep("-", 62), "\\n", sep = "")
+  cat("1. Random sample; observations are independent.\\n")
+  cat("2. The variable is measured on a continuous scale.\\n")
+  cat("No assumption about the shape of the distribution is required.\\n")
+
+  nt <- 0
+  if (ach - conf > 0.005 || tiesmed > 1 || ndist < n/2 || zw == 1) {
+    cat("\\nNotes\\n"); cat(strrep("-", 62), "\\n", sep = "")
+  }
+  if (ach - conf > 0.005) { nt <- nt + 1
+    cat(nt, ". Achieved confidence (", formatC(100*ach, format = "f", digits = 2),
+        "%) exceeds the requested ", formatC(100*conf, format = "f", digits = 2),
+        "%.\\n   Endpoints must fall on observed values, so only certain levels are\\n",
+        "   attainable at this n. The interval is slightly conservative.\\n", sep = "") }
+  if (tiesmed > 1) { nt <- nt + 1
+    cat(nt, ". The median value occurs ", tiesmed, " times. Repeated values make the\\n",
+        "   interval more conservative than the achieved level suggests.\\n", sep = "") }
+  if (ndist < n/2) { nt <- nt + 1
+    cat(nt, ". Only ", ndist, " distinct values among ", n, " observations. The continuity\\n",
+        "   assumption is questionable and true coverage may exceed the stated level.\\n", sep = "") }
+  if (zw == 1) { nt <- nt + 1
+    cat(nt, ". The interval has zero width: both endpoints are the same value. Report\\n",
+        "   it, but do not read it as high precision.\\n", sep = "") }
+}
+
+c(ok=ok, n=n, med=med, q1=qq[1], q3=qq[2], iqr=qq[2]-qq[1], mn=x[1], mx=x[n],
+  k=k, lo=lo, hi=hi, moe=moe, ach=ach, ndist=ndist, tiesmed=tiesmed, zw=zw, nmin=nmin)`,
+    render(R, ctx){
+      const resp = ctx.cols.resp;
+      if(!R.ok){
+        return buildAPA({
+          title:`Descriptive Statistics for ${resp}`,
+          headers:[{t:'Variable'},{t:'n',it:true,num:true},{t:'Mdn',it:true,num:true}],
+          rows:[[{t:resp},{t:R.n,num:true},{t:f2(R.med),num:true}]],
+          note:{
+            html:`<i>Note.</i> A ${pct(ctx.conf)} distribution-free interval for the median cannot be formed with <i>n</i> = ${R.n}; at least <i>n</i> = ${R.nmin} observations are required at this confidence level.`,
+            plain:`Note. A ${pct(ctx.conf)} distribution-free interval for the median cannot be formed with n = ${R.n}; at least n = ${R.nmin} observations are required at this confidence level.`
+          }
+        });
+      }
+      const achP = (100*R.ach).toFixed(2)+'%';
+      const consv = (R.ach - ctx.conf > 0.005)
+        ? ` The achieved level exceeds the requested ${pct(ctx.conf)} because the limits must fall on observed values, so the interval is slightly conservative.` : '';
+      const tiesH = (R.tiesmed > 1 || R.ndist < R.n/2)
+        ? ` Repeated values are present (${R.ndist} distinct values among ${R.n} observations), which makes coverage somewhat higher than the stated level.` : '';
+      return buildAPA({
+        title:`Descriptive Statistics and Distribution-Free Confidence Interval for the Median of ${resp}`,
+        headers:[{t:'Variable'},{t:'n',it:true,num:true},{t:'Mdn',it:true,num:true},{t:'IQR',num:true},{t:'Min',num:true},{t:'Max',num:true}],
+        rows:[
+          [{t:resp},{t:R.n,num:true},{t:f2(R.med),num:true},{t:f2(R.iqr),num:true},{t:f2(R.mn),num:true},{t:f2(R.mx),num:true}]
+        ],
+        note:{
+          html:`<i>Note.</i> <i>Mdn</i> = ${f2(R.med)}, ${achP} CI [${f2(R.lo)}, ${f2(R.hi)}]. Exact distribution-free interval obtained by inverting the sign test; the limits are order statistics ${R.k} and ${R.n-R.k+1} of ${R.n}. Requested confidence ${pct(ctx.conf)}; achieved ${achP}.${consv}${tiesH}`,
+          plain:`Note. Mdn = ${f2(R.med)}, ${achP} CI [${f2(R.lo)}, ${f2(R.hi)}]. Exact distribution-free interval obtained by inverting the sign test; the limits are order statistics ${R.k} and ${R.n-R.k+1} of ${R.n}. Requested confidence ${pct(ctx.conf)}; achieved ${achP}.${consv}${tiesH}`
+        }
+      });
+    }
+  },
+
   twoprop: {
     label: "Two-sample - Independent proportions (Newcombe CI + Cohen's h, RR, OR)",
     dropHint: "A 2-level outcome column and a 2-level grouping column. If pre-aggregated, also pick the counts column.",
@@ -1989,7 +2108,8 @@ const MENU_SECTIONS = [
     ['eda', 'Summary statistics + plots']]],
   ['One-Sample Tests', [
     ['onesample', 't-test for a mean'],
-    ['oneprop',   'z-test for a proportion']]],
+    ['oneprop',   'z-test for a proportion'],
+    ['median_ci', 'Confidence interval for a median (exact, distribution-free)']]],
   ['Two-Sample Tests \u2014 Dependent', [
     ['paired',  'Paired t-test for mean difference \u2014 repeated measures/matched pairs'],
     ['mcnemar', "McNemar's test for difference between paired proportions"]]],
