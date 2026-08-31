@@ -232,11 +232,16 @@ const pFmt = p => p < .001 ? '< .001' : '= ' + nz(p,3);
 
 /* ============================ APA table builder ============================ */
 // headers: [{t, it, num}]   rows: [[{t, num}, ...]]   note: {html, plain}
-function buildAPA({title, headers, rows, note}){
+function buildAPA({title, headers, rows, note, num=1}){
+  // A cell may carry markup for the screen and the Word copy; `p` (or a
+  // tag-stripped fallback) is what goes into the plain-text copy.
+  const txt = c => c.p != null ? String(c.p)
+    : String(c.t).replace(/<[^>]*>/g,'').replace(/&nbsp;/g,' ')
+                 .replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&amp;/g,'&');
   const sHead = headers.map(h=>`<th class="${h.num?'num':''}">${h.it?`<span style="font-style:italic">${h.t}</span>`:h.t}</th>`).join('');
   const sBody = rows.map(r=>`<tr>${r.map(c=>`<td class="${c.num?'num':''}">${c.t}</td>`).join('')}</tr>`).join('');
   const screenHtml =
-    `<p class="tnum">Table 1</p><p class="ttitle">${title}</p>`+
+    `<p class="tnum">Table ${num}</p><p class="ttitle">${title}</p>`+
     `<table class="apa-tbl"><thead><tr>${sHead}</tr></thead><tbody>${sBody}</tbody></table>`+
     `<p class="note">${note.html}</p>`;
 
@@ -246,14 +251,14 @@ function buildAPA({title, headers, rows, note}){
   const cBody = rows.map((r,ri)=>{ const last=ri===rows.length-1;
     return `<tr>${r.map((c,i)=>`<td style="${C}${last?BB:''}text-align:${i===0?'left':'right'};">${c.t}</td>`).join('')}</tr>`; }).join('');
   const copyHtml =
-    `<p style="font-style:italic;font-family:'Times New Roman',serif;font-size:11pt;margin:0;">Table 1</p>`+
+    `<p style="font-style:italic;font-family:'Times New Roman',serif;font-size:11pt;margin:0;">Table ${num}</p>`+
     `<p style="font-style:italic;font-family:'Times New Roman',serif;font-size:11pt;margin:0 0 6pt;">${title}</p>`+
     `<table style="border-collapse:collapse;"><tr>${cHead}</tr>${cBody}</table>`+
     `<p style="font-family:'Times New Roman',serif;font-size:11pt;margin:6pt 0 0;">${note.html}</p>`;
 
-  const plain = `Table 1\n${title}\n\n`+
-    headers.map(h=>h.t).join('\t')+'\n'+
-    rows.map(r=>r.map(c=>c.t).join('\t')).join('\n')+'\n\n'+note.plain;
+  const plain = `Table ${num}\n${title}\n\n`+
+    headers.map(txt).join('\t')+'\n'+
+    rows.map(r=>r.map(txt).join('\t')).join('\n')+'\n\n'+note.plain;
 
   return {screenHtml, copyHtml, plain};
 }
@@ -265,6 +270,10 @@ function buildAPA({title, headers, rows, note}){
    Box checked: one single-step Bonferroni adjustment applied to BOTH the p-values and
    the intervals, so test and interval agree by construction. */
 function multOn(env){ return Number(env && env.bonf) === 1; }
+// Secondary tables are built as real APA tables (Table 2) so that they travel
+// with the Copy table button instead of living only on screen.
+const sub2 = t => `<div style="margin-top:22px">${t.screenHtml}</div>`;
+const paraCopy = html => `<p style="font-family:'Times New Roman',serif;font-size:11pt;margin:8pt 0 0;">${html}</p>`;
 function multBits(on, m, ci){
   const pHead   = on ? 'Bonferroni' : 'Holm';
   const capCI   = on ? `${ci} simultaneous CIs` : `${ci} unadjusted CIs`;
@@ -714,12 +723,26 @@ list(chi2 = unname(ct$statistic), df = unname(ct$parameter), p = ct$p.value,
           plain:`Note. chi-square(${R.df[0]}, N = ${R.N[0]}) = ${f2(R.chi2[0])}, p ${pFmt(R.p[0])}. Cramer's V (bias-corrected) = ${nz(R.V[0])}, ${ciPct}% CI [${nz(R.cil[0])}, ${nz(R.ciu[0])}].${warnP}`
         };
         const main = buildAPA({ title:`Contingency Table and Chi-Square Test of ${rowName} by ${colName}`, headers, rows, note });
-        let resid = `<p class="tnum" style="margin-top:18px">Standardized residuals</p><table class="apa-tbl"><thead><tr><th>${rowName}</th>${collab.map(c=>`<th class="num">${String(c)}</th>`).join('')}</tr></thead><tbody>`;
-        for(let i=0;i<nr;i++){ resid += `<tr><td>${String(rowlab[i])}</td>${collab.map((_,j)=>`<td class="num">${f2(std[i*nc+j])}</td>`).join('')}</tr>`; }
-        resid += `</tbody></table>`;
+        const residRows = [];
+        for(let i=0;i<nr;i++){
+          residRows.push([{t:String(rowlab[i])}].concat(collab.map((_,j)=>({t:f2(std[i*nc+j]), num:true}))));
+        }
+        const t2 = buildAPA({
+          num:2,
+          title:`Standardized Residuals for ${rowName} by ${colName}`,
+          headers:[{t:rowName}].concat(collab.map(c=>({t:String(c), num:true}))),
+          rows:residRows,
+          note:{
+            html:`<i>Note.</i> Residuals with |<i>z</i>| greater than about 2 flag the cells driving the association.`,
+            plain:`Note. Residuals with |z| greater than about 2 flag the cells driving the association.`
+          }
+        });
         document.getElementById('console').textContent = consoleText;
-        document.getElementById('apa').innerHTML = main.screenHtml + resid;
-        lastResult = { plain: main.plain, htmlTable: main.copyHtml };
+        document.getElementById('apa').innerHTML = main.screenHtml + sub2(t2);
+        lastResult = {
+          plain: `${main.plain}\n\n${t2.plain}`,
+          htmlTable: main.copyHtml + '<br>' + t2.copyHtml
+        };
         document.getElementById('outStep').classList.remove('hidden');
         const confPct = Math.round(env.conf*100);
         const methodNote = `<b>Cram\u00E9r's <i>V</i> and its interval.</b> Cram\u00E9r's <i>V</i> uses the bias-corrected (Bergsma) adjustment. You selected a ${confPct}% confidence level, but it is shown as a ${ciPct}% CI: because the \u03C7\u00B2 test is one-sided, a ${ciPct}% two-sided interval corresponds to the ${confPct}% test (Steiger, 2004; Lakens, 2013). Standardized residuals with |z| greater than about 2 flag the cells driving the association.`;
@@ -1366,15 +1389,33 @@ list(lv = lv, xs = xs, ns = ns, ps = ps, k = k, m = m,
           headers:[{t:grp},{t:'x',it:true,num:true},{t:'n',it:true,num:true},{t:'p\u0302',num:true}],
           rows, note
         });
-        let pt = `<p class="tnum" style="margin-top:18px">Pairwise proportion differences (${MB.capCI})</p><table class="apa-tbl"><thead><tr><th>Comparison</th><th class="num">Diff.</th><th class="num">${ci} CI</th><th class="num"><span style="font-style:italic">z</span></th><th class="num"><span style="font-style:italic">p</span> (${MB.pHead})</th></tr></thead><tbody>`;
+        const pairRows = [];
         for(let r=0;r<m;r++){
-          pt += `<tr><td>${String(R.gi[r])} \u2212 ${String(R.gj[r])}</td><td class="num">${nzsig(R.dv[r])}</td><td class="num">[${nzsig(R.lo[r])}, ${nzsig(R.hi[r])}]</td><td class="num">${f2(R.zv[r])}</td><td class="num">${pcell(R.ph[r])}</td></tr>`;
+          pairRows.push([
+            {t:`${String(R.gi[r])} \u2212 ${String(R.gj[r])}`},
+            {t:nzsig(R.dv[r]),num:true},
+            {t:`[${nzsig(R.lo[r])}, ${nzsig(R.hi[r])}]`,num:true},
+            {t:f2(R.zv[r]),num:true},
+            {t:pcell(R.ph[r]),num:true}
+          ]);
         }
-        pt += `</tbody></table>` + MB.footScreen;
-        const omLine = `<p class="tnum" style="margin-top:14px;margin-bottom:2px"><b>Omnibus (subordinate, non-gating):</b> \u03C7\u00B2 test of homogeneity, <i>\u03C7</i>\u00B2(${R.omdf[0]}) = ${f2(R.omstat[0])}, <i>p</i> ${pFmt(R.omp[0])}.</p>`;
+        const t2 = buildAPA({
+          num:2,
+          title:`Pairwise Differences in the Proportion of ${outcome} = ${success} by ${grp} (${MB.capCI})`,
+          headers:[{t:'Comparison'},{t:'Diff.',num:true},{t:`${ci} CI`,num:true},
+                   {t:'z',it:true,num:true},{t:`<i>p</i> (${MB.pHead})`,p:`p (${MB.pHead})`,num:true}],
+          rows:pairRows,
+          note:{html:MB.footHtml, plain:MB.footPlain}
+        });
+        const omHtml = `<b>Omnibus (subordinate, non-gating):</b> \u03C7\u00B2 test of homogeneity, <i>\u03C7</i>\u00B2(${R.omdf[0]}) = ${f2(R.omstat[0])}, <i>p</i> ${pFmt(R.omp[0])}.`;
+        const omPlain = `Omnibus (subordinate, non-gating): chi-square(${R.omdf[0]}) = ${f2(R.omstat[0])}, p ${pFmt(R.omp[0])}.`;
         document.getElementById('console').textContent = consoleText;
-        document.getElementById('apa').innerHTML = main.screenHtml + omLine + pt;
-        lastResult = { plain: main.plain + '\n' + MB.footPlain, htmlTable: main.copyHtml + MB.footCopy };
+        document.getElementById('apa').innerHTML = main.screenHtml
+          + `<p class="tnum" style="margin-top:14px;margin-bottom:2px">${omHtml}</p>` + sub2(t2);
+        lastResult = {
+          plain: `${main.plain}\n\n${omPlain}\n\n${t2.plain}`,
+          htmlTable: main.copyHtml + paraCopy(omHtml) + '<br>' + t2.copyHtml
+        };
         document.getElementById('outStep').classList.remove('hidden');
         const mLead = multOn(env)
           ? `Both the tests and the intervals carry the same single-step Bonferroni adjustment here: each <i>p</i>-value is multiplied by ${m}, and each interval is computed at the Bonferroni per-interval level so that all ${m} intervals hold jointly at ${pct(env.conf)}. Test and interval then agree by construction, at the cost of power and interval width. Unticking the box returns the default, which pairs Holm-adjusted <i>p</i>-values with unadjusted per-comparison intervals.`
@@ -1690,14 +1731,34 @@ list(lv = lv, ns = ns, ms = ms, ss = ss, k = k,
           rows, note
         });
         // Games-Howell table
-        let gh = `<p class="tnum" style="margin-top:18px">Games-Howell pairwise comparisons (${ci} CIs)</p><table class="apa-tbl"><thead><tr><th>Comparison</th><th class="num"><span style="font-style:italic">M</span> diff.</th><th class="num">${ci} CI</th><th class="num"><span style="font-style:italic">t</span></th><th class="num"><span style="font-style:italic">df</span></th><th class="num"><span style="font-style:italic">p</span></th></tr></thead><tbody>`;
+        const ghRows = [];
         for(let r=0;r<R.gd.length;r++){
-          gh += `<tr><td>${String(R.gi[r])} \u2212 ${String(R.gj[r])}</td><td class="num">${f2(R.gd[r])}</td><td class="num">[${f2(R.glo[r])}, ${f2(R.ghi[r])}]</td><td class="num">${f2(R.gt[r])}</td><td class="num">${f2(R.gdf[r])}</td><td class="num">${pcell(R.gp[r])}</td></tr>`;
+          ghRows.push([
+            {t:`${String(R.gi[r])} \u2212 ${String(R.gj[r])}`},
+            {t:f2(R.gd[r]),num:true},
+            {t:`[${f2(R.glo[r])}, ${f2(R.ghi[r])}]`,num:true},
+            {t:f2(R.gt[r]),num:true},
+            {t:f2(R.gdf[r]),num:true},
+            {t:pcell(R.gp[r]),num:true}
+          ]);
         }
-        gh += `</tbody></table>`;
+        const t2 = buildAPA({
+          num:2,
+          title:`Games-Howell Pairwise Comparisons of ${resp} by ${grp} (${ci} CIs)`,
+          headers:[{t:'Comparison'},{t:'<i>M</i> diff.',p:'M diff.',num:true},{t:`${ci} CI`,num:true},
+                   {t:'t',it:true,num:true},{t:'df',it:true,num:true},{t:'p',it:true,num:true}],
+          rows:ghRows,
+          note:{
+            html:`<i>Note.</i> Games-Howell controls the familywise error rate across all ${R.gd.length} comparisons, so the intervals and the <i>p</i>-values carry the same adjustment.`,
+            plain:`Note. Games-Howell controls the familywise error rate across all ${R.gd.length} comparisons, so the intervals and the p-values carry the same adjustment.`
+          }
+        });
         document.getElementById('console').textContent = consoleText;
-        document.getElementById('apa').innerHTML = main.screenHtml + gh;
-        lastResult = { plain: main.plain, htmlTable: main.copyHtml };
+        document.getElementById('apa').innerHTML = main.screenHtml + sub2(t2);
+        lastResult = {
+          plain: `${main.plain}\n\n${t2.plain}`,
+          htmlTable: main.copyHtml + '<br>' + t2.copyHtml
+        };
         document.getElementById('outStep').classList.remove('hidden');
         const methodNote = `<b>Why these methods.</b> Welch's <i>F</i> is the default because the classical <i>F</i> is not robust to unequal variances and pretesting them does not help (Delacre, Leys, Mora &amp; Lakens, 2019). Games-Howell is the matching post hoc under unequal variances and <i>n</i>'s (Games &amp; Howell, 1976; Sauder &amp; DeMars, 2019), and it runs unconditionally \u2014 it controls the familywise error rate on its own, so it needs no significant omnibus <i>F</i> first (Bernhardson, 1975; Hayter, 1986). Adjusted \u03C9\u00B2 (Albers &amp; Lakens, 2018) incorporates Welch's corrected df. You selected ${confPct}%, but the \u03C9\u00B2 interval is shown as a ${ciPct}% CI: because the <i>F</i> test is one-sided, a ${ciPct}% two-sided interval corresponds to the ${confPct}% test (Steiger, 2004; Lakens, 2013). The \u03C9\u00B2 interval inverts a noncentral <i>F</i> on Welch df \u2014 exact under equal variances, an accepted approximation otherwise.`;
         const mn=document.getElementById('methodNote'); mn.innerHTML=methodNote; mn.classList.remove('hidden');
@@ -1792,18 +1853,38 @@ list(lv = lv, ns = ns, mds = mds, k = k, m = m,
           headers:[{t:grp},{t:'n',it:true,num:true},{t:'Mdn',it:true,num:true}],
           rows, note
         });
-        let mt = `<p class="tnum" style="margin-top:18px">Pairwise median differences (${MB.capCI})</p><table class="apa-tbl"><thead><tr><th>Comparison</th><th class="num"><span style="font-style:italic">Mdn</span> diff.</th><th class="num">${ci} CI</th><th class="num"><span style="font-style:italic">t</span></th><th class="num"><span style="font-style:italic">p</span> (${MB.pHead})</th></tr></thead><tbody>`;
+        const pairRows = [];
         for(let r=0;r<m;r++){
-          mt += `<tr><td>${String(R.gi[r])} \u2212 ${String(R.gj[r])}</td><td class="num">${f2(R.est[r])}</td><td class="num">[${f2(R.lo[r])}, ${f2(R.hi[r])}]</td><td class="num">${f2(R.tv[r])}</td><td class="num">${pcell(R.ph[r])}</td></tr>`;
+          pairRows.push([
+            {t:`${String(R.gi[r])} \u2212 ${String(R.gj[r])}`},
+            {t:f2(R.est[r]),num:true},
+            {t:`[${f2(R.lo[r])}, ${f2(R.hi[r])}]`,num:true},
+            {t:f2(R.tv[r]),num:true},
+            {t:pcell(R.ph[r]),num:true}
+          ]);
         }
-        mt += `</tbody></table>` + MB.footScreen;
+        const t2 = buildAPA({
+          num:2,
+          title:`Pairwise Median Differences in ${resp} by ${grp} (${MB.capCI})`,
+          headers:[{t:'Comparison'},{t:'<i>Mdn</i> diff.',p:'Mdn diff.',num:true},{t:`${ci} CI`,num:true},
+                   {t:'t',it:true,num:true},{t:`<i>p</i> (${MB.pHead})`,p:`p (${MB.pHead})`,num:true}],
+          rows:pairRows,
+          note:{html:MB.footHtml, plain:MB.footPlain}
+        });
         const omAvail = R.omp && Number.isFinite(Number(R.omp[0]));
-        const omLine = omAvail
-          ? `<p class="tnum" style="margin-top:14px;margin-bottom:2px"><b>Omnibus (subordinate, non-gating):</b> median-equality test (<span style="font-style:italic">anova.rq</span>, Wald), <i>T</i><sub><i>n</i></sub> = ${f2(R.omF[0])}, <i>df</i> = ${R.omdf1[0]}, <i>p</i> ${pFmt(R.omp[0])}.</p>`
-          : `<p class="tnum" style="margin-top:14px;margin-bottom:2px"><b>Omnibus (subordinate, non-gating):</b> median-equality test could not be computed on these data (see console).</p>`;
+        const omHtml = omAvail
+          ? `<b>Omnibus (subordinate, non-gating):</b> median-equality test (<span style="font-style:italic">anova.rq</span>, Wald), <i>T</i><sub><i>n</i></sub> = ${f2(R.omF[0])}, <i>df</i> = ${R.omdf1[0]}, <i>p</i> ${pFmt(R.omp[0])}.`
+          : `<b>Omnibus (subordinate, non-gating):</b> median-equality test could not be computed on these data (see console).`;
+        const omPlain = omAvail
+          ? `Omnibus (subordinate, non-gating): median-equality test (anova.rq, Wald), Tn = ${f2(R.omF[0])}, df = ${R.omdf1[0]}, p ${pFmt(R.omp[0])}.`
+          : `Omnibus (subordinate, non-gating): median-equality test could not be computed on these data (see console).`;
         document.getElementById('console').textContent = consoleText;
-        document.getElementById('apa').innerHTML = main.screenHtml + omLine + mt;
-        lastResult = { plain: main.plain + '\n' + MB.footPlain, htmlTable: main.copyHtml + MB.footCopy };
+        document.getElementById('apa').innerHTML = main.screenHtml
+          + `<p class="tnum" style="margin-top:14px;margin-bottom:2px">${omHtml}</p>` + sub2(t2);
+        lastResult = {
+          plain: `${main.plain}\n\n${omPlain}\n\n${t2.plain}`,
+          htmlTable: main.copyHtml + paraCopy(omHtml) + '<br>' + t2.copyHtml
+        };
         document.getElementById('outStep').classList.remove('hidden');
         const mLead = multOn(env)
           ? `Multiplicity is handled as in the proportions module: both the <i>p</i>-values and the intervals carry the same single-step Bonferroni adjustment, so all ${m} intervals hold jointly at the ${pct(env.conf)} level and test and interval agree by construction, at the cost of power and width. Unticking the box returns the default, which pairs Holm-adjusted <i>p</i>-values with unadjusted per-comparison intervals.`
@@ -1910,16 +1991,37 @@ if (inherits(res, "error")) {
           rows, note
         });
         // omnibus subordinate line (explicitly non-gating)
-        let omLine = `<p class="tnum" style="margin-top:14px;margin-bottom:2px"><b>Omnibus (subordinate, non-gating):</b> BDM-type relative-effects test (MCTP, multivariate-<i>t</i>), <i>p</i> ${pFmt(R.om[0])}.</p>`;
+        const omHtml = `<b>Omnibus (subordinate, non-gating):</b> BDM-type relative-effects test (MCTP, multivariate-<i>t</i>), <i>p</i> ${pFmt(R.om[0])}.`;
+        const omPlain = `Omnibus (subordinate, non-gating): BDM-type relative-effects test (MCTP, multivariate-t), p ${pFmt(R.om[0])}.`;
         // pairwise contrast table
-        let ct = `<p class="tnum" style="margin-top:14px">Pairwise contrasts of relative effects (${ci} simultaneous CIs)</p><table class="apa-tbl"><thead><tr><th>Comparison</th><th class="num">Contrast</th><th class="num">${ci} CI</th><th class="num"><span style="font-style:italic">t</span></th><th class="num"><span style="font-style:italic">p</span> (adj.)</th></tr></thead><tbody>`;
+        const pairRows = [];
         for(let r=0;r<m;r++){
           const loName = String(lv[R.lo[r]-1]); const hiName = String(lv[R.hi[r]-1]);
-          ct += `<tr><td>${loName} \u2192 ${hiName}</td><td class="num">${f2(R.est[r])}</td><td class="num">[${f2(R.low[r])}, ${f2(R.up[r])}]</td><td class="num">${f2(R.st[r])}</td><td class="num">${pcell(R.pv[r])}</td></tr>`;
+          pairRows.push([
+            {t:`${loName} \u2192 ${hiName}`},
+            {t:f2(R.est[r]),num:true},
+            {t:`[${f2(R.low[r])}, ${f2(R.up[r])}]`,num:true},
+            {t:f2(R.st[r]),num:true},
+            {t:pcell(R.pv[r]),num:true}
+          ]);
         }
-        ct += `</tbody></table>`;
-        document.getElementById('apa').innerHTML = main.screenHtml + omLine + ct;
-        lastResult = { plain: main.plain, htmlTable: main.copyHtml };
+        const t2 = buildAPA({
+          num:2,
+          title:`Pairwise Contrasts of Relative Effects for ${resp} by ${grp} (${ci} Simultaneous CIs)`,
+          headers:[{t:'Comparison'},{t:'Contrast',num:true},{t:`${ci} CI`,num:true},
+                   {t:'t',it:true,num:true},{t:'<i>p</i> (adj.)',p:'p (adj.)',num:true}],
+          rows:pairRows,
+          note:{
+            html:`<i>Note.</i> Simultaneous intervals and multiplicity-adjusted <i>p</i>-values come jointly from the multivariate <i>t</i>, so all ${m} intervals hold together at ${ci} and each interval agrees with its own adjusted <i>p</i>-value.`,
+            plain:`Note. Simultaneous intervals and multiplicity-adjusted p-values come jointly from the multivariate t, so all ${m} intervals hold together at ${ci} and each interval agrees with its own adjusted p-value.`
+          }
+        });
+        document.getElementById('apa').innerHTML = main.screenHtml
+          + `<p class="tnum" style="margin-top:14px;margin-bottom:2px">${omHtml}</p>` + sub2(t2);
+        lastResult = {
+          plain: `${main.plain}\n\n${omPlain}\n\n${t2.plain}`,
+          htmlTable: main.copyHtml + paraCopy(omHtml) + '<br>' + t2.copyHtml
+        };
         document.getElementById('outStep').classList.remove('hidden');
         const methodNote = `<b>Why this analysis.</b> This is the <i>k</i>-group rank-based analogue of the Brunner-Munzel test, and the nonparametric counterpart to Welch's ANOVA \u2014 it assumes neither equal variances nor equal distribution shapes, and it is valid for ordinal as well as interval/ratio outcomes. The <b>omnibus</b> tests <i>H</i>\u2080: all groups have equal relative effects (each group is equally likely to rank high or low against the pooled sample), in the spirit of Brunner, Dette &amp; Munk (1997); here it is the global multivariate-<i>t</i> test that accompanies the MCTP. It is reported as a subordinate, <i>non-gating</i> summary: the pairwise contrasts below control the familywise error rate on their own and are run unconditionally (Sauder &amp; DeMars, 2019). Each <b>pairwise contrast</b> is a difference in relative effects \u2014 a positive value means the second-named group tends to rank above the first in the combined sample \u2014 with simultaneous confidence intervals and multiplicity-adjusted <i>p</i>-values computed jointly from the multivariate <i>t</i>-distribution (the single-step MCTP of Konietschke, Hothorn &amp; Brunner, 2012), the rank-based parallel to Games-Howell. Because the omnibus and the contrasts are both framed on relative effects, they can occasionally disagree (a significant omnibus with no single significant contrast signals a diffuse effect spread across groups); this is informative, not contradictory. Brunner, Dette &amp; Munk (1997); Brunner &amp; Munzel (2000).`;
         const mn=document.getElementById('methodNote'); mn.innerHTML=methodNote; mn.classList.remove('hidden');
@@ -2016,13 +2118,30 @@ list(lv = lv, ns = ns, k = k, m = m,
           headers:[{t:grp},{t:'n',it:true,num:true}],
           rows, note
         });
-        let pt = `<p class="tnum" style="margin-top:14px">Pairwise relative effects (${MB.capCI})</p><table class="apa-tbl"><thead><tr><th>Comparison</th><th class="num">P(1 &lt; 2)</th><th class="num">${ci} CI</th><th class="num"><span style="font-style:italic">T</span></th><th class="num"><span style="font-style:italic">p</span> (${MB.pHead})</th></tr></thead><tbody>`;
+        const pairRows = [];
         for(let r=0;r<m;r++){
-          pt += `<tr><td>P(${String(R.gi[r])} &lt; ${String(R.gj[r])})</td><td class="num">${nzc(R.est[r])}</td><td class="num">${(R.lo[r]==null||Number.isNaN(Number(R.lo[r])))?'\u2014':`[${nz(R.lo[r])}, ${nz(R.hi[r])}]`}</td><td class="num">${fcell(R.tv[r])}</td><td class="num">${pcell(R.ph[r])}</td></tr>`;
+          const ciCell = (R.lo[r]==null||Number.isNaN(Number(R.lo[r]))) ? '\u2014' : `[${nz(R.lo[r])}, ${nz(R.hi[r])}]`;
+          pairRows.push([
+            {t:`P(${String(R.gi[r])} &lt; ${String(R.gj[r])})`, p:`P(${String(R.gi[r])} < ${String(R.gj[r])})`},
+            {t:nzc(R.est[r]),num:true},
+            {t:ciCell,num:true},
+            {t:fcell(R.tv[r]),num:true},
+            {t:pcell(R.ph[r]),num:true}
+          ]);
         }
-        pt += `</tbody></table>` + MB.footScreen;
-        document.getElementById('apa').innerHTML = main.screenHtml + pt;
-        lastResult = { plain: main.plain + '\n' + MB.footPlain, htmlTable: main.copyHtml + MB.footCopy };
+        const t2 = buildAPA({
+          num:2,
+          title:`Pairwise Relative Effects for ${resp} by ${grp} (${MB.capCI})`,
+          headers:[{t:'Comparison'},{t:'P(1 &lt; 2)',p:'P(1 < 2)',num:true},{t:`${ci} CI`,num:true},
+                   {t:'T',it:true,num:true},{t:`<i>p</i> (${MB.pHead})`,p:`p (${MB.pHead})`,num:true}],
+          rows:pairRows,
+          note:{html:MB.footHtml, plain:MB.footPlain}
+        });
+        document.getElementById('apa').innerHTML = main.screenHtml + sub2(t2);
+        lastResult = {
+          plain: `${main.plain}\n\n${t2.plain}`,
+          htmlTable: main.copyHtml + '<br>' + t2.copyHtml
+        };
         document.getElementById('outStep').classList.remove('hidden');
         const sepNote = (R.nfail && R.nfail[0]>0) ? ` One or more pairs were perfectly separated and could not be interval-estimated; they are shown as dashes.` : '';
         const mLead = multOn(env)
