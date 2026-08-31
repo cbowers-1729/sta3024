@@ -151,6 +151,11 @@
         <option value="0.99">99%</option>
       </select>
     </div>
+    <div id="adjControls" class="hidden" style="margin-top:14px">
+      <label class="fld" for="bonfChk">Multiplicity adjustment</label>
+      <label class="chk"><input type="checkbox" id="bonfChk"> Bonferroni: adjusted <i>p</i>-values and simultaneous CIs</label>
+      <div class="hint" style="margin-top:6px">Unchecked (default): Holm-adjusted <i>p</i>-values with unadjusted per-comparison intervals. Checked: a single-step Bonferroni adjustment applied to both, so all intervals hold jointly at the confidence level above.</div>
+    </div>
     <div id="altControls" class="hidden" style="margin-top:14px">
       <label class="fld" for="altSel">Alternative hypothesis</label>
       <select id="altSel" style="max-width:280px">
@@ -251,6 +256,33 @@ function buildAPA({title, headers, rows, note}){
     rows.map(r=>r.map(c=>c.t).join('\t')).join('\n')+'\n\n'+note.plain;
 
   return {screenHtml, copyHtml, plain};
+}
+
+/* ==================== multiplicity wording (all-pairwise modules) ====================
+   Default (box unchecked): Holm-adjusted p-values, which control the familywise error
+   rate, alongside unadjusted per-comparison confidence intervals. The two answer
+   different questions and can disagree; the footnote below says so.
+   Box checked: one single-step Bonferroni adjustment applied to BOTH the p-values and
+   the intervals, so test and interval agree by construction. */
+function multOn(env){ return Number(env && env.bonf) === 1; }
+function multBits(on, m, ci){
+  const pHead   = on ? 'Bonferroni' : 'Holm';
+  const capCI   = on ? `${ci} simultaneous CIs` : `${ci} unadjusted CIs`;
+  const methHtml = on
+    ? `${m} comparisons: Bonferroni-adjusted <i>p</i>-values; ${ci} single-step Bonferroni simultaneous CIs.`
+    : `${m} comparisons: Holm-adjusted <i>p</i>-values; ${ci} unadjusted per-comparison CIs.`;
+  const methPlain = on
+    ? `${m} comparisons: Bonferroni-adjusted p-values; ${ci} single-step Bonferroni simultaneous CIs.`
+    : `${m} comparisons: Holm-adjusted p-values; ${ci} unadjusted per-comparison CIs.`;
+  const footHtml = on
+    ? `<i>Note.</i> The <i>p</i>-values and the intervals carry the same single-step Bonferroni adjustment, so all ${m} intervals hold jointly at ${ci} and test and interval agree by construction.`
+    : `<i>Note.</i> Each interval controls only per-comparison coverage while the <i>p</i>-value controls the familywise error rate across all ${m} comparisons, so the two can disagree; that disagreement is the visible effect of the multiplicity adjustment.`;
+  const footPlain = on
+    ? `Note. The p-values and the intervals carry the same single-step Bonferroni adjustment, so all ${m} intervals hold jointly at ${ci} and test and interval agree by construction.`
+    : `Note. Each interval controls only per-comparison coverage while the p-value controls the familywise error rate across all ${m} comparisons, so the two can disagree; that disagreement is the visible effect of the multiplicity adjustment.`;
+  const footScreen = `<p class="note" style="margin-top:8px">${footHtml}</p>`;
+  const footCopy   = `<p style="font-family:'Times New Roman',serif;font-size:11pt;margin:6pt 0 0;">${footHtml}</p>`;
+  return { pHead, capCI, methHtml, methPlain, footHtml, footPlain, footScreen, footCopy };
 }
 
 /* ============================ shared R snippets ============================ */
@@ -1242,6 +1274,7 @@ c(x1=x1,n1=n1,p1=p1, x2=x2,n2=n2,p2=p2, z=zstat, p=ptst$p.value,
 
   pairprops: {
     label: "Pairwise proportion differences (3+ groups, Newcombe)",
+    multiplicity: true,
     dropHint: "A 2-level outcome column and a grouping column with 2 or more levels. If pre-aggregated, also pick the counts column.",
     roles: [
       { key:'outcome', kind:'group2',    label:'Outcome — categorical, exactly 2 levels' },
@@ -1268,12 +1301,21 @@ for (i in 1:k) {
   }
 }
 ps <- xs / ns
-alpha <- 1 - conf; alpha_b <- alpha / m
-zb <- qnorm(1 - alpha_b/2)
+alpha <- 1 - conf
+bonf_on <- exists("bonf") && as.numeric(bonf)[1] == 1
+alpha_ci <- if (bonf_on) alpha / m else alpha   # per-interval level for the CIs
+padj_m <- if (bonf_on) "bonferroni" else "holm"
+ci_lab <- if (bonf_on) "simultaneous CI" else "CI"
+p_lab  <- if (bonf_on) "p(Bonf)" else "p(Holm)"
+zb <- qnorm(1 - alpha_ci/2)
 wilson <- function(x, n, zc){ ph <- x/n; cen <- (ph + zc^2/(2*n))/(1 + zc^2/n)
   hw <- (zc/(1 + zc^2/n))*sqrt(ph*(1-ph)/n + zc^2/(4*n^2)); c(cen - hw, cen + hw) }
 cat(sprintf("Pairwise differences between proportions (success = %s)\\n", su))
-cat(sprintf("%d comparisons; Holm-adjusted p-values; %.0f%% Bonferroni-Newcombe simultaneous CIs (per-interval %.4f)\\n\\n", m, conf*100, 1 - alpha_b))
+if (bonf_on) {
+  cat(sprintf("%d comparisons; Bonferroni-adjusted p-values; %.0f%% Bonferroni-Newcombe simultaneous CIs (per-interval %.4f)\\n\\n", m, conf*100, 1 - alpha_ci))
+} else {
+  cat(sprintf("%d comparisons; Holm-adjusted p-values (familywise); %.0f%% unadjusted per-comparison Newcombe CIs\\n\\n", m, conf*100))
+}
 gi <- c(); gj <- c(); dv <- c(); lo <- c(); hi <- c(); zv <- c(); pr <- c()
 for (i in 1:(k-1)) for (j in (i+1):k) {
   d <- ps[i] - ps[j]
@@ -1285,9 +1327,9 @@ for (i in 1:(k-1)) for (j in (i+1):k) {
   gi <- c(gi, lv[i]); gj <- c(gj, lv[j]); dv <- c(dv, d); lo <- c(lo, dlo); hi <- c(hi, dup)
   zv <- c(zv, z); pr <- c(pr, pt$p.value)
 }
-ph <- p.adjust(pr, method = "holm")
-for (r in 1:m) cat(sprintf("  %s - %s: diff = %.4f, simultaneous CI [%.4f, %.4f], z = %.3f, p(raw) = %.5g, p(Holm) = %.5g\\n",
-  gi[r], gj[r], dv[r], lo[r], hi[r], zv[r], pr[r], ph[r]))
+ph <- p.adjust(pr, method = padj_m)
+for (r in 1:m) cat(sprintf("  %s - %s: diff = %.4f, %s [%.4f, %.4f], z = %.3f, p(raw) = %.5g, %s = %.5g\\n",
+  gi[r], gj[r], dv[r], ci_lab, lo[r], hi[r], zv[r], pr[r], p_lab, ph[r]))
 # Omnibus: chi-square test of homogeneity across all k groups (same estimand as the contrasts)
 omtab <- rbind(success = xs, failure = ns - xs)
 omchi <- suppressWarnings(chisq.test(omtab, correct = FALSE))
@@ -1310,30 +1352,34 @@ list(lv = lv, xs = xs, ns = ns, ps = ps, k = k, m = m,
         const R = rlistToObj(await cap.result.toJs());
         const grp=cols.grp, outcome=cols.outcome, success=env.success, ci=pct(env.conf);
         const k=R.k[0], m=R.m[0], lv=R.lv;
+        const MB = multBits(multOn(env), m, ci);
         const pcell = p => p < .001 ? '< .001' : nz(p,3);
         const rows = lv.map((g,i)=>[
           {t:String(g)},{t:R.xs[i],num:true},{t:R.ns[i],num:true},{t:nzsig(R.ps[i])}
         ]);
         const note = {
-          html:`<i>Note.</i> All pairwise differences in the proportion of ${outcome} = ${success}. ${m} comparisons: Holm-adjusted <i>p</i>-values; ${ci} Bonferroni-Newcombe simultaneous CIs.`,
-          plain:`Note. All pairwise differences in the proportion of ${outcome} = ${success}. ${m} comparisons: Holm-adjusted p-values; ${ci} Bonferroni-Newcombe simultaneous CIs.`
+          html:`<i>Note.</i> All pairwise differences in the proportion of ${outcome} = ${success}, each interval a Newcombe hybrid-score interval. ${MB.methHtml}`,
+          plain:`Note. All pairwise differences in the proportion of ${outcome} = ${success}, each interval a Newcombe hybrid-score interval. ${MB.methPlain}`
         };
         const main = buildAPA({
           title:`Group Proportions and Pairwise Differences for ${outcome} (success = ${success}) by ${grp}`,
           headers:[{t:grp},{t:'x',it:true,num:true},{t:'n',it:true,num:true},{t:'p\u0302',num:true}],
           rows, note
         });
-        let pt = `<p class="tnum" style="margin-top:18px">Pairwise proportion differences (${ci} simultaneous CIs)</p><table class="apa-tbl"><thead><tr><th>Comparison</th><th class="num">Diff.</th><th class="num">${ci} CI</th><th class="num"><span style="font-style:italic">z</span></th><th class="num"><span style="font-style:italic">p</span> (Holm)</th></tr></thead><tbody>`;
+        let pt = `<p class="tnum" style="margin-top:18px">Pairwise proportion differences (${MB.capCI})</p><table class="apa-tbl"><thead><tr><th>Comparison</th><th class="num">Diff.</th><th class="num">${ci} CI</th><th class="num"><span style="font-style:italic">z</span></th><th class="num"><span style="font-style:italic">p</span> (${MB.pHead})</th></tr></thead><tbody>`;
         for(let r=0;r<m;r++){
           pt += `<tr><td>${String(R.gi[r])} \u2212 ${String(R.gj[r])}</td><td class="num">${nzsig(R.dv[r])}</td><td class="num">[${nzsig(R.lo[r])}, ${nzsig(R.hi[r])}]</td><td class="num">${f2(R.zv[r])}</td><td class="num">${pcell(R.ph[r])}</td></tr>`;
         }
-        pt += `</tbody></table>`;
+        pt += `</tbody></table>` + MB.footScreen;
         const omLine = `<p class="tnum" style="margin-top:14px;margin-bottom:2px"><b>Omnibus (subordinate, non-gating):</b> \u03C7\u00B2 test of homogeneity, <i>\u03C7</i>\u00B2(${R.omdf[0]}) = ${f2(R.omstat[0])}, <i>p</i> ${pFmt(R.omp[0])}.</p>`;
         document.getElementById('console').textContent = consoleText;
         document.getElementById('apa').innerHTML = main.screenHtml + omLine + pt;
-        lastResult = { plain: main.plain, htmlTable: main.copyHtml };
+        lastResult = { plain: main.plain + '\n' + MB.footPlain, htmlTable: main.copyHtml + MB.footCopy };
         document.getElementById('outStep').classList.remove('hidden');
-        const methodNote = `<b>Why these methods.</b> Each pairwise difference uses the Newcombe hybrid-score interval, which keeps good coverage at any <i>n</i>, here computed at the Bonferroni-adjusted per-interval level so all ${m} intervals hold jointly at ${pct(env.conf)} (Newcombe, 1998). Testing uses Holm-adjusted <i>p</i>-values, which control the familywise error rate and are uniformly more powerful than Bonferroni (Holm, 1979). Because Holm does not invert cleanly to two-sided simultaneous intervals, the tests and the intervals use different adjustments \u2014 so a comparison can be Holm-significant while its simultaneous CI grazes the null. That is not a contradiction; it is the price of honest joint coverage. The <b>omnibus</b> \u03C7\u00B2 test of homogeneity tests <i>H</i>\u2080: all ${k} group proportions are equal \u2014 the joint version of the pairwise nulls, on the same scale. It is reported as a subordinate, <i>non-gating</i> summary: the pairwise comparisons control their own error rate and are read directly, never conditioned on the omnibus. Because both are framed on the proportions, they can disagree \u2014 a significant \u03C7\u00B2 with no single significant pair signals a difference spread diffusely across groups; that is informative.`;
+        const mLead = multOn(env)
+          ? `Both the tests and the intervals carry the same single-step Bonferroni adjustment here: each <i>p</i>-value is multiplied by ${m}, and each interval is computed at the Bonferroni per-interval level so that all ${m} intervals hold jointly at ${pct(env.conf)}. Test and interval then agree by construction, at the cost of power and interval width. Unticking the box returns the default, which pairs Holm-adjusted <i>p</i>-values with unadjusted per-comparison intervals.`
+          : `The intervals are unadjusted, so each one covers its own difference with probability ${pct(env.conf)} and describes the size of that single difference on its own terms. Testing uses Holm-adjusted <i>p</i>-values, which control the familywise error rate across all ${m} comparisons and are uniformly more powerful than Bonferroni (Holm, 1979). The interval and the test therefore answer different questions and can disagree: an interval that excludes zero next to a nonsignificant Holm <i>p</i>-value is the multiplicity adjustment made visible, not a contradiction. Ticking the Bonferroni box puts both on one single-step footing, so that all ${m} intervals hold jointly at ${pct(env.conf)}.`;
+        const methodNote = `<b>Why these methods.</b> Each pairwise difference uses the Newcombe hybrid-score interval, which keeps good coverage at any <i>n</i> (Newcombe, 1998). ${mLead} The <b>omnibus</b> \u03C7\u00B2 test of homogeneity tests <i>H</i>\u2080: all ${k} group proportions are equal \u2014 the joint version of the pairwise nulls, on the same scale. It is reported as a subordinate, <i>non-gating</i> summary: the pairwise comparisons control their own error rate and are read directly, never conditioned on the omnibus. Because both are framed on the proportions, they can disagree \u2014 a significant \u03C7\u00B2 with no single significant pair signals a difference spread diffusely across groups; that is informative.`;
         const mn=document.getElementById('methodNote'); mn.innerHTML=methodNote; mn.classList.remove('hidden');
         setStatus(`Done. ${used} rows used${dropped?`, ${dropped} dropped for missing values`:''}.`);
       } finally { await shelter.purge(); }
@@ -1662,6 +1708,7 @@ list(lv = lv, ns = ns, ms = ms, ss = ss, k = k,
 
   median_contrasts: {
     label: "Pairwise median differences (quantile regression, \u03C4 = 0.5)",
+    multiplicity: true,
     dropHint: "Long/tidy data: a numeric outcome column and a grouping column with 2 or more levels.",
     roles: [
       { key:'resp', kind:'numeric',   label:'Response — numeric outcome' },
@@ -1675,9 +1722,17 @@ lv <- levels(d$g); k <- length(lv); m <- k*(k-1)/2
 ns <- as.numeric(tapply(d$y, d$g, length))
 mds <- as.numeric(tapply(d$y, d$g, median))
 alpha <- 1 - conf
-alpha_b <- alpha / m   # single-step Bonferroni for simultaneous CIs
+bonf_on <- exists("bonf") && as.numeric(bonf)[1] == 1
+alpha_ci <- if (bonf_on) alpha / m else alpha   # per-interval level for the CIs
+padj_m <- if (bonf_on) "bonferroni" else "holm"
+ci_lab <- if (bonf_on) "simultaneous CI" else "CI"
+p_lab  <- if (bonf_on) "p(Bonf)" else "p(Holm)"
 cat(sprintf("Pairwise median differences via quantile regression (tau = 0.5)\\n"))
-cat(sprintf("%d comparisons; Holm-adjusted p-values; %.0f%% Bonferroni simultaneous CIs (per-interval %.4f)\\n\\n", m, conf*100, 1 - alpha_b))
+if (bonf_on) {
+  cat(sprintf("%d comparisons; Bonferroni-adjusted p-values; %.0f%% Bonferroni simultaneous CIs (per-interval %.4f)\\n\\n", m, conf*100, 1 - alpha_ci))
+} else {
+  cat(sprintf("%d comparisons; Holm-adjusted p-values (familywise); %.0f%% unadjusted per-comparison CIs\\n\\n", m, conf*100))
+}
 gi <- c(); gj <- c(); est <- c(); se <- c(); tv <- c(); pr <- c(); lo <- c(); hi <- c()
 for (i in 1:(k-1)) for (j in (i+1):k) {
   dd <- droplevels(d[d$g %in% c(lv[i], lv[j]), ])
@@ -1687,13 +1742,13 @@ for (i in 1:(k-1)) for (j in (i+1):k) {
   e <- sm$coefficients[2,1]; s <- sm$coefficients[2,2]
   tt <- sm$coefficients[2,3]; p <- sm$coefficients[2,4]
   dfres <- nrow(dd) - 2
-  hw <- qt(1 - alpha_b/2, dfres) * s
+  hw <- qt(1 - alpha_ci/2, dfres) * s
   gi <- c(gi, lv[i]); gj <- c(gj, lv[j]); est <- c(est, e); se <- c(se, s)
   tv <- c(tv, tt); pr <- c(pr, p); lo <- c(lo, e - hw); hi <- c(hi, e + hw)
 }
-ph <- p.adjust(pr, method = "holm")
-for (r in 1:m) cat(sprintf("  %s - %s: Mdn diff = %.4f, simultaneous CI [%.4f, %.4f], t = %.3f, p(raw) = %.5g, p(Holm) = %.5g\\n",
-  gi[r], gj[r], est[r], lo[r], hi[r], tv[r], pr[r], ph[r]))
+ph <- p.adjust(pr, method = padj_m)
+for (r in 1:m) cat(sprintf("  %s - %s: Mdn diff = %.4f, %s [%.4f, %.4f], t = %.3f, p(raw) = %.5g, %s = %.5g\\n",
+  gi[r], gj[r], est[r], ci_lab, lo[r], hi[r], tv[r], pr[r], p_lab, ph[r]))
 # Omnibus: joint test that all group medians are equal (anova.rq, same estimand as contrasts)
 omfit <- rq(y ~ g, tau = 0.5, data = d)
 omnull <- rq(y ~ 1, tau = 0.5, data = d)
@@ -1723,33 +1778,37 @@ list(lv = lv, ns = ns, mds = mds, k = k, m = m,
         const R = rlistToObj(await cap.result.toJs());
         const grp=cols.grp, resp=cols.resp, ci=pct(env.conf);
         const k=R.k[0], m=R.m[0], lv=R.lv;
+        const MB = multBits(multOn(env), m, ci);
         const pcell = p => p < .001 ? '< .001' : nz(p,3);
         const rows = lv.map((g,i)=>[
           {t:String(g)},{t:R.ns[i],num:true},{t:f2(R.mds[i]),num:true}
         ]);
         const note = {
-          html:`<i>Note.</i> Pairwise median differences estimated by quantile regression (\u03C4 = 0.5). ${m} comparisons: Holm-adjusted <i>p</i>-values; ${ci} single-step (Bonferroni) simultaneous CIs. Mdn = median.`,
-          plain:`Note. Pairwise median differences estimated by quantile regression (tau = 0.5). ${m} comparisons: Holm-adjusted p-values; ${ci} single-step (Bonferroni) simultaneous CIs. Mdn = median.`
+          html:`<i>Note.</i> Pairwise median differences estimated by quantile regression (\u03C4 = 0.5). ${MB.methHtml} Mdn = median.`,
+          plain:`Note. Pairwise median differences estimated by quantile regression (tau = 0.5). ${MB.methPlain} Mdn = median.`
         };
         const main = buildAPA({
           title:`Group Medians and Pairwise Median Differences for ${resp} by ${grp}`,
           headers:[{t:grp},{t:'n',it:true,num:true},{t:'Mdn',it:true,num:true}],
           rows, note
         });
-        let mt = `<p class="tnum" style="margin-top:18px">Pairwise median differences (${ci} simultaneous CIs)</p><table class="apa-tbl"><thead><tr><th>Comparison</th><th class="num"><span style="font-style:italic">Mdn</span> diff.</th><th class="num">${ci} CI</th><th class="num"><span style="font-style:italic">t</span></th><th class="num"><span style="font-style:italic">p</span> (Holm)</th></tr></thead><tbody>`;
+        let mt = `<p class="tnum" style="margin-top:18px">Pairwise median differences (${MB.capCI})</p><table class="apa-tbl"><thead><tr><th>Comparison</th><th class="num"><span style="font-style:italic">Mdn</span> diff.</th><th class="num">${ci} CI</th><th class="num"><span style="font-style:italic">t</span></th><th class="num"><span style="font-style:italic">p</span> (${MB.pHead})</th></tr></thead><tbody>`;
         for(let r=0;r<m;r++){
           mt += `<tr><td>${String(R.gi[r])} \u2212 ${String(R.gj[r])}</td><td class="num">${f2(R.est[r])}</td><td class="num">[${f2(R.lo[r])}, ${f2(R.hi[r])}]</td><td class="num">${f2(R.tv[r])}</td><td class="num">${pcell(R.ph[r])}</td></tr>`;
         }
-        mt += `</tbody></table>`;
+        mt += `</tbody></table>` + MB.footScreen;
         const omAvail = R.omp && Number.isFinite(Number(R.omp[0]));
         const omLine = omAvail
           ? `<p class="tnum" style="margin-top:14px;margin-bottom:2px"><b>Omnibus (subordinate, non-gating):</b> median-equality test (<span style="font-style:italic">anova.rq</span>, Wald), <i>T</i><sub><i>n</i></sub> = ${f2(R.omF[0])}, <i>df</i> = ${R.omdf1[0]}, <i>p</i> ${pFmt(R.omp[0])}.</p>`
           : `<p class="tnum" style="margin-top:14px;margin-bottom:2px"><b>Omnibus (subordinate, non-gating):</b> median-equality test could not be computed on these data (see console).</p>`;
         document.getElementById('console').textContent = consoleText;
         document.getElementById('apa').innerHTML = main.screenHtml + omLine + mt;
-        lastResult = { plain: main.plain, htmlTable: main.copyHtml };
+        lastResult = { plain: main.plain + '\n' + MB.footPlain, htmlTable: main.copyHtml + MB.footCopy };
         document.getElementById('outStep').classList.remove('hidden');
-        const methodNote = `<b>Why this analysis.</b> Quantile regression at \u03C4 = 0.5 estimates the difference between group <i>medians</i> \u2014 a dimensioned location shift in the outcome's own units, the right estimand for interval/ratio outcomes when means are not the target. (The rank-based Brunner-Munzel tests stochastic dominance, not medians \u2014 Divine et al., 2018; this module is the one that actually compares medians.) Multiplicity is handled as in the proportions section: Holm-adjusted <i>p</i>-values control the familywise error rate (Holm, 1979), and the CIs are single-step Bonferroni simultaneous intervals so all ${m} hold jointly at the ${pct(env.conf)} level. Standard errors use the kernel ("nid") method, which allows unequal spread across groups. The <b>omnibus</b> is a joint quantile-regression test (<span style="font-style:italic">anova.rq</span>) of <i>H</i>\u2080: all ${k} group medians are equal \u2014 the joint version of the pairwise nulls, on the same median scale. It is reported as a subordinate, <i>non-gating</i> summary: the pairwise comparisons are read directly and never conditioned on it. A significant omnibus with no single significant pair signals a difference spread diffusely across groups.`;
+        const mLead = multOn(env)
+          ? `Multiplicity is handled as in the proportions module: both the <i>p</i>-values and the intervals carry the same single-step Bonferroni adjustment, so all ${m} intervals hold jointly at the ${pct(env.conf)} level and test and interval agree by construction, at the cost of power and width. Unticking the box returns the default, which pairs Holm-adjusted <i>p</i>-values with unadjusted per-comparison intervals.`
+          : `Multiplicity is handled as in the proportions module: Holm-adjusted <i>p</i>-values control the familywise error rate across all ${m} comparisons (Holm, 1979), while the intervals are unadjusted and each covers its own median difference with probability ${pct(env.conf)}. The two answer different questions and can disagree; that disagreement is the multiplicity adjustment made visible. Ticking the Bonferroni box puts both on one single-step footing, so that all ${m} intervals hold jointly at ${pct(env.conf)}.`;
+        const methodNote = `<b>Why this analysis.</b> Quantile regression at \u03C4 = 0.5 estimates the difference between group <i>medians</i>, a dimensioned location shift in the outcome's own units, the right estimand for interval/ratio outcomes when means are not the target. (The rank-based Brunner-Munzel tests stochastic dominance, not medians; Divine et al., 2018. This module is the one that actually compares medians.) ${mLead} Standard errors use the kernel ("nid") method, which allows unequal spread across groups. The <b>omnibus</b> is a joint quantile-regression test (<span style="font-style:italic">anova.rq</span>) of <i>H</i>\u2080: all ${k} group medians are equal \u2014 the joint version of the pairwise nulls, on the same median scale. It is reported as a subordinate, <i>non-gating</i> summary: the pairwise comparisons are read directly and never conditioned on it. A significant omnibus with no single significant pair signals a difference spread diffusely across groups.`;
         const mn=document.getElementById('methodNote'); mn.innerHTML=methodNote; mn.classList.remove('hidden');
         setStatus(`Done. ${used} rows used${dropped?`, ${dropped} dropped for missing values`:''}.`);
       } finally { await shelter.purge(); }
@@ -1871,6 +1930,7 @@ if (inherits(res, "error")) {
 
   bm_pairwise: {
     label: "Head-to-head rank comparisons (pairwise Brunner-Munzel) \u2014 3+ groups",
+    multiplicity: true,
     dropHint: "Long/tidy data: a numeric or ordinal outcome and a grouping column with 3 or more levels. Each pair is compared on its own, ignoring the other groups. (For exactly 2 groups, use the Brunner-Munzel test.)",
     roles: [
       { key:'resp', kind:'numeric',     label:'Response \u2014 numeric or ordinal outcome' },
@@ -1884,16 +1944,24 @@ d <- data.frame(y = as.numeric(resp), g = factor(grp))
 lv <- levels(d$g); k <- length(lv); m <- k*(k-1)/2
 ns <- as.numeric(tapply(d$y, d$g, length))
 alpha <- 1 - conf
-conf_b <- 1 - alpha/m   # Bonferroni per-interval level for simultaneous CIs
+bonf_on <- exists("bonf") && as.numeric(bonf)[1] == 1
+conf_ci <- if (bonf_on) 1 - alpha/m else conf   # per-interval level for the CIs
+padj_m <- if (bonf_on) "bonferroni" else "holm"
+ci_lab <- if (bonf_on) "sim. CI" else "CI"
+p_lab  <- if (bonf_on) "p(Bonf)" else "p(Holm)"
 cat("Head-to-head pairwise Brunner-Munzel (each pair re-ranked on its own)\\n")
 cat(sprintf("Groups: %s\\n", paste(lv, collapse=", ")))
-cat(sprintf("%d comparisons; Holm-adjusted p-values; %.0f%% Bonferroni simultaneous CIs (per-interval %.4f)\\n\\n", m, conf*100, conf_b))
+if (bonf_on) {
+  cat(sprintf("%d comparisons; Bonferroni-adjusted p-values; %.0f%% Bonferroni simultaneous CIs (per-interval %.4f)\\n\\n", m, conf*100, conf_ci))
+} else {
+  cat(sprintf("%d comparisons; Holm-adjusted p-values (familywise); %.0f%% unadjusted per-comparison CIs\\n\\n", m, conf*100))
+}
 gi <- c(); gj <- c(); est <- c(); lo <- c(); hi <- c(); tv <- c(); pr <- c(); failpair <- c()
 for (i in 1:(k-1)) for (j in (i+1):k) {
   sub <- droplevels(d[d$g %in% c(lv[i], lv[j]), ])
-  # estimate + per-pair p at nominal level (for Holm); CI at Bonferroni level
+  # the p-value does not depend on conf.level; only the interval width does
   r1 <- tryCatch(npar.t.test(y ~ g, data = sub, method = "t.app", info = FALSE,
-                  alternative = "two.sided", conf.level = conf_b), error = function(e) e)
+                  alternative = "two.sided", conf.level = conf_ci), error = function(e) e)
   if (inherits(r1, "error")) {
     gi <- c(gi, lv[i]); gj <- c(gj, lv[j]); est <- c(est, NA); lo <- c(lo, NA); hi <- c(hi, NA)
     tv <- c(tv, NA); pr <- c(pr, NA); failpair <- c(failpair, paste(lv[i], lv[j], sep="-"))
@@ -1905,13 +1973,13 @@ for (i in 1:(k-1)) for (j in (i+1):k) {
   gi <- c(gi, lv[i]); gj <- c(gj, lv[j]); est <- c(est, eff); lo <- c(lo, L); hi <- c(hi, U)
   tv <- c(tv, Tval); pr <- c(pr, pval)
 }
-ph <- p.adjust(pr, method = "holm")
+ph <- p.adjust(pr, method = padj_m)
 for (r in seq_along(est)) {
   if (is.na(est[r])) {
     cat(sprintf("  %s vs %s: could not be computed (likely complete separation)\\n", gi[r], gj[r]))
   } else {
-    cat(sprintf("  P(%s < %s) = %.4f, %.0f%% sim. CI [%.4f, %.4f], T = %.3f, p(raw) = %.5g, p(Holm) = %.5g\\n",
-        gi[r], gj[r], est[r], conf*100, lo[r], hi[r], tv[r], pr[r], ph[r]))
+    cat(sprintf("  P(%s < %s) = %.4f, %.0f%% %s [%.4f, %.4f], T = %.3f, p(raw) = %.5g, %s = %.5g\\n",
+        gi[r], gj[r], est[r], conf*100, ci_lab, lo[r], hi[r], tv[r], pr[r], p_lab, ph[r]))
   }
 }
 cat("\\nGroup sizes:\\n")
@@ -1933,30 +2001,34 @@ list(lv = lv, ns = ns, k = k, m = m,
         document.getElementById('console').textContent = consoleText;
         const grp=cols.grp, resp=cols.resp, ci=pct(env.conf);
         const k=R.k[0], m=R.est.length, lv=R.lv;
+        const MB = multBits(multOn(env), m, ci);
         const pcell = p => (p==null || Number.isNaN(Number(p))) ? '\u2014' : (p < .001 ? '< .001' : nz(p,3));
         const fcell = x => (x==null || Number.isNaN(Number(x))) ? '\u2014' : f2(x);
         const nzc = x => (x==null || Number.isNaN(Number(x))) ? '\u2014' : nz(x);
         // group sizes table
         const rows = lv.map((g,i)=>[{t:String(g)},{t:R.ns[i],num:true}]);
         const note = {
-          html:`<i>Note.</i> Each comparison is a Brunner-Munzel relative effect P(group&nbsp;1 &lt; group&nbsp;2), with each pair re-ranked on its own (the other groups are ignored). ${m} comparisons: Holm-adjusted <i>p</i>-values; ${ci} single-step (Bonferroni) simultaneous CIs.`,
-          plain:`Note. Each comparison is a Brunner-Munzel relative effect P(group 1 < group 2), with each pair re-ranked on its own (the other groups are ignored). ${m} comparisons: Holm-adjusted p-values; ${ci} single-step (Bonferroni) simultaneous CIs.`
+          html:`<i>Note.</i> Each comparison is a Brunner-Munzel relative effect P(group&nbsp;1 &lt; group&nbsp;2), with each pair re-ranked on its own (the other groups are ignored). ${MB.methHtml}`,
+          plain:`Note. Each comparison is a Brunner-Munzel relative effect P(group 1 < group 2), with each pair re-ranked on its own (the other groups are ignored). ${MB.methPlain}`
         };
         const main = buildAPA({
           title:`Head-to-Head Pairwise Brunner-Munzel Comparisons for ${resp} by ${grp}`,
           headers:[{t:grp},{t:'n',it:true,num:true}],
           rows, note
         });
-        let pt = `<p class="tnum" style="margin-top:14px">Pairwise relative effects (${ci} simultaneous CIs)</p><table class="apa-tbl"><thead><tr><th>Comparison</th><th class="num">P(1 &lt; 2)</th><th class="num">${ci} CI</th><th class="num"><span style="font-style:italic">T</span></th><th class="num"><span style="font-style:italic">p</span> (Holm)</th></tr></thead><tbody>`;
+        let pt = `<p class="tnum" style="margin-top:14px">Pairwise relative effects (${MB.capCI})</p><table class="apa-tbl"><thead><tr><th>Comparison</th><th class="num">P(1 &lt; 2)</th><th class="num">${ci} CI</th><th class="num"><span style="font-style:italic">T</span></th><th class="num"><span style="font-style:italic">p</span> (${MB.pHead})</th></tr></thead><tbody>`;
         for(let r=0;r<m;r++){
           pt += `<tr><td>P(${String(R.gi[r])} &lt; ${String(R.gj[r])})</td><td class="num">${nzc(R.est[r])}</td><td class="num">${(R.lo[r]==null||Number.isNaN(Number(R.lo[r])))?'\u2014':`[${nz(R.lo[r])}, ${nz(R.hi[r])}]`}</td><td class="num">${fcell(R.tv[r])}</td><td class="num">${pcell(R.ph[r])}</td></tr>`;
         }
-        pt += `</tbody></table>`;
+        pt += `</tbody></table>` + MB.footScreen;
         document.getElementById('apa').innerHTML = main.screenHtml + pt;
-        lastResult = { plain: main.plain, htmlTable: main.copyHtml };
+        lastResult = { plain: main.plain + '\n' + MB.footPlain, htmlTable: main.copyHtml + MB.footCopy };
         document.getElementById('outStep').classList.remove('hidden');
         const sepNote = (R.nfail && R.nfail[0]>0) ? ` One or more pairs were perfectly separated and could not be interval-estimated; they are shown as dashes.` : '';
-        const methodNote = `<b>Why this analysis.</b> This answers the <i>head-to-head</i> question: for each pair of groups on its own, how likely is a randomly drawn value from one to exceed a value from the other? Each pair is <i>re-ranked using only those two groups</i>, so the comparison of A and B does not depend on what is in any third group \u2014 the direct <i>k</i>-group extension of the two-sample Brunner-Munzel test (Brunner &amp; Munzel, 2000), which assumes neither equal variances nor equal shapes and is valid for ordinal as well as interval/ratio outcomes. Multiplicity follows the same scheme as the proportion- and median-difference modules: Holm-adjusted <i>p</i>-values control the familywise error rate for testing (Holm, 1979), while the confidence intervals are single-step Bonferroni simultaneous intervals \u2014 because Holm does not invert cleanly to two-sided simultaneous intervals, a pair can be Holm-significant while its CI grazes \u00BD; that is honest coverage, not a contradiction. <b>No omnibus is reported here, by design:</b> a global test consistent with this head-to-head estimand has no clean standard form, because re-ranking each pair removes the shared rank structure a joint test would need. The omnibus that <i>does</i> exist \u2014 the Brunner-Dette-Munk / MCTP test \u2014 answers the different \u201Cstanding in the combined sample\u201D question; if you want that, use the companion \u201CGroup standing in the combined sample\u201D module.${sepNote}`;
+        const mLead = multOn(env)
+          ? `Multiplicity follows the same scheme as the proportion- and median-difference modules: both the <i>p</i>-values and the intervals carry the same single-step Bonferroni adjustment, so all ${m} intervals hold jointly at ${pct(env.conf)} and test and interval agree by construction, at the cost of power and width. Unticking the box returns the default, which pairs Holm-adjusted <i>p</i>-values with unadjusted per-comparison intervals.`
+          : `Multiplicity follows the same scheme as the proportion- and median-difference modules: Holm-adjusted <i>p</i>-values control the familywise error rate for testing (Holm, 1979), while the intervals are unadjusted and each covers its own relative effect with probability ${pct(env.conf)}. The two answer different questions and can disagree; a pair whose interval clears \u00BD next to a nonsignificant Holm <i>p</i>-value is the multiplicity adjustment made visible. Ticking the Bonferroni box puts both on one single-step footing, so that all ${m} intervals hold jointly at ${pct(env.conf)}.`;
+        const methodNote = `<b>Why this analysis.</b> This answers the <i>head-to-head</i> question: for each pair of groups on its own, how likely is a randomly drawn value from one to exceed a value from the other? Each pair is <i>re-ranked using only those two groups</i>, so the comparison of A and B does not depend on what is in any third group. It is the direct <i>k</i>-group extension of the two-sample Brunner-Munzel test (Brunner &amp; Munzel, 2000), which assumes neither equal variances nor equal shapes and is valid for ordinal as well as interval/ratio outcomes. ${mLead} <b>No omnibus is reported here, by design:</b> a global test consistent with this head-to-head estimand has no clean standard form, because re-ranking each pair removes the shared rank structure a joint test would need. The omnibus that <i>does</i> exist \u2014 the Brunner-Dette-Munk / MCTP test \u2014 answers the different \u201Cstanding in the combined sample\u201D question; if you want that, use the companion \u201CGroup standing in the combined sample\u201D module.${sepNote}`;
         const mn=document.getElementById('methodNote'); mn.innerHTML=methodNote; mn.classList.remove('hidden');
         setStatus(`Done. ${used} rows used${dropped?`, ${dropped} dropped for missing values`:''}.`);
       } finally { await shelter.purge(); }
@@ -2325,6 +2397,7 @@ function updateEdaControls(){
   document.getElementById('edaControls').classList.toggle('hidden', testSel.value!=='eda');
   document.getElementById('confControls').classList.toggle('hidden', testSel.value==='eda');
   document.getElementById('altControls').classList.toggle('hidden', !(t && t.sided));
+  document.getElementById('adjControls').classList.toggle('hidden', !(t && t.multiplicity));
 }
 function currentConf(){ return Number(document.getElementById('confSel').value); }
 const fci = x => Number.isFinite(Number(x)) ? f2(x) : (Number(x)<0 ? MINUS+'\u221E' : '\u221E');
@@ -2594,6 +2667,7 @@ runBtn.addEventListener('click', async ()=>{
   active.forEach(r=>{ env[r.key+'_name'] = cols[r.key]; });   // column names for R-side labels
   env.conf = currentConf();   // confidence level available to every module's R
   env.alt = t.sided ? document.getElementById('altSel').value : 'two.sided';   // alternative hypothesis (modules that declare sided)
+  env.bonf = (t.multiplicity && document.getElementById('bonfChk').checked) ? 1 : 0;   // multiplicity switch (modules that declare multiplicity)
 
   // custom-run modules (EDA) manage their own output area
   if(t.run){
