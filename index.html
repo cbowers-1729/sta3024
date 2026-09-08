@@ -697,6 +697,145 @@ c(stat=stat, df=df, p=p, phat=pst, cil=ci[1], ciu=ci[2],
     }
   },
 
+  ind_medians: {
+    label: "Two-sample - Independent medians (smoothed percentile bootstrap)",
+    dropHint: "Long/tidy data: a numeric outcome column and a 2-level grouping column.",
+    sided: true,
+    methodNote: "<b>Why this analysis.</b> This estimates the difference between the two group <i>medians</i>, a location shift in the outcome's own units. It is the right estimand for an interval or ratio outcome when the mean is not the target, as with skewed or bounded clinical and screening scores. The Brunner-Munzel test in this same section answers a different question, stochastic superiority rather than location (Divine et al., 2018). <b>How it is computed.</b> A <b>smoothed percentile bootstrap</b>: each group is resampled 2,000 times, a small amount of kernel noise is added to every resample, and the interval is read off the percentiles of the resulting distribution of median differences (Silverman &amp; Young, 1987). The point estimate is the ordinary difference of sample medians; smoothing affects only the interval. <b>Why smoothed.</b> The bootstrap distribution of a median is atomic, since a resample median can only take values already present in the sample, and when data are recorded on a coarse scale such as whole numbers or a rating scale, that lattice makes several standard methods fail, some of them <i>worse</i> as the sample grows. Kernel smoothing breaks the lattice. In simulation across skewed populations and rounding levels this approach held its coverage where quantile-regression standard errors, Bonett-Price, and BCa did not. <b>The <i>p</i>-value.</b> It is obtained by inverting the interval: it is the level at which the interval would just exclude zero. Test and interval are therefore the same event and cannot contradict each other. A separate distance-from-centre <i>p</i>-value would not guarantee that, because the bootstrap distribution of a median difference is skewed and an equal-tailed interval is a different event. <b>Reproducibility.</b> Resampling uses the seed shown in the setup panel, so the same data and the same seed give identical output; change the seed to see how far the last digits move. <b>Assumptions.</b> Independent observations within and between groups, and a uniquely defined population median in each group. Nothing is assumed about shape, spread, or normality, and the two groups need not share any of them. <b>More than two groups.</b> Use the pairwise median differences module, which runs this same bootstrap with familywise error control.",
+    roles: [
+      { key:'resp', kind:'numeric', label:'Response (numeric outcome)' },
+      { key:'grp',  kind:'group2',  label:'Group (must have exactly 2 levels)' }
+    ],
+    params: [
+      { key:'seed', type:'number', label:'Random seed (bootstrap resampling)', default:20260907 }
+    ],
+    defaults: { resp:'bwt', grp:'smoke' },
+    resultKeys: ['est','cil','ciu','p','se','n1','md1','iqr1','n2','md2','iqr2','zw','seedv'],
+    rProgram: `
+# Difference between two independent medians by SMOOTHED PERCENTILE BOOTSTRAP.
+# Same engine as the k-group pairwise module, reduced to a single comparison, so
+# on the two-sided default the two return identical numbers for identical data
+# and an identical seed. One-sided alternatives are available only here.
+set.seed(as.integer(seed))
+B <- 2000
+
+d <- data.frame(v = as.numeric(resp), g = factor(grp))
+lv <- levels(d$g)
+x1 <- d$v[d$g == lv[1]]; x2 <- d$v[d$g == lv[2]]
+n1 <- length(x1); n2 <- length(x2)
+md1 <- median(x1);  md2 <- median(x2)
+iqr1 <- IQR(x1);    iqr2 <- IQR(x2)
+est <- md1 - md2                       # point estimate: the raw median difference
+alpha <- 1 - conf
+floorp <- 1/(B + 1)
+
+# Percentile endpoints on the boot.ci convention, so the numbers agree with
+# boot::boot.ci computed on the same resamples.
+norm_inter <- function(ts, a) {
+  R <- length(ts); rk <- (R + 1) * a; kk <- trunc(rk); out <- numeric(length(a))
+  for (j in seq_along(a)) {
+    if (kk[j] <= 0)      out[j] <- ts[1]
+    else if (kk[j] >= R) out[j] <- ts[R]
+    else if (isTRUE(all.equal(kk[j], rk[j]))) out[j] <- ts[kk[j]]
+    else {
+      z1 <- qnorm(a[j]); z2 <- qnorm(kk[j]/(R+1)); z3 <- qnorm((kk[j]+1)/(R+1))
+      out[j] <- ts[kk[j]] + (z1 - z2)/(z3 - z2) * (ts[kk[j]+1] - ts[kk[j]])
+    }
+  }
+  out
+}
+# The level at which the percentile endpoint lands exactly on the null value.
+# Reading the p-value off this level makes the test and the interval the same
+# event, so they cannot contradict each other. A symmetric "how far from centre"
+# p-value would be a different event, because the bootstrap distribution of a
+# median difference is skewed while the interval is equal-tailed.
+perc_level <- function(ts, v0) {
+  R <- length(ts)
+  if (v0 <= ts[1]) return(1/(R + 1))
+  if (v0 >= ts[R]) return(1 - 1/(R + 1))
+  a <- 0; b <- 1
+  for (it in 1:45) { mid <- (a + b)/2
+    if (norm_inter(ts, mid) < v0) a <- mid else b <- mid }
+  (a + b)/2
+}
+# Silverman and Young (1987) smoothing bandwidth.
+boot_bw <- function(v) {
+  n <- length(v); s1 <- sd(v); s2 <- IQR(v)/1.349
+  s <- min(s1, if (is.finite(s2) && s2 > 0) s2 else s1)
+  if (!is.finite(s) || s <= 0) return(0)
+  0.9 * s * n^(-1/5)
+}
+
+# One smoothed bootstrap per group. Kernel noise breaks the lattice that
+# coarsely recorded data imposes on the resampling distribution.
+h1 <- boot_bw(x1); h2 <- boot_bw(x2)
+b1 <- apply(matrix(x1[sample.int(n1, n1*B, replace = TRUE)], nrow = B) + rnorm(n1*B, 0, h1), 1, median)
+b2 <- apply(matrix(x2[sample.int(n2, n2*B, replace = TRUE)], nrow = B) + rnorm(n2*B, 0, h2), 1, median)
+db <- b1 - b2; dbs <- sort(db); se <- sd(db)
+
+a0 <- perc_level(dbs, 0)
+# Two-sided is floored the way the k-group module floors it, so the two report
+# the same number when zero falls outside the whole resampling distribution.
+p2 <- if (0 <= dbs[1] || 0 >= dbs[B]) floorp else min(1, 2*min(a0, 1 - a0))
+p <- switch(alt,
+  "greater" = min(1, max(a0, floorp)),
+  "less"    = min(1, max(1 - a0, floorp)),
+  max(p2, floorp))
+if (alt == "two.sided") {
+  ee <- norm_inter(dbs, c(alpha/2, 1 - alpha/2)); cil <- ee[1]; ciu <- ee[2]
+} else if (alt == "greater") {
+  cil <- norm_inter(dbs, alpha); ciu <- Inf
+} else {
+  cil <- -Inf; ciu <- norm_inter(dbs, conf)
+}
+zw <- as.numeric(is.finite(cil) && is.finite(ciu) && ciu - cil == 0)
+fmt_b <- function(v) if (is.finite(v)) sprintf("%.4f", v) else if (v > 0) "Inf" else "-Inf"
+
+cat("\\n\\tSmoothed Percentile Bootstrap for a Difference Between Medians\\n\\n")
+cat("data:  resp by grp\\n")
+cat(sprintf("resamples: %d per group; seed: %d\\n", B, as.integer(seed)))
+cat(sprintf("alternative hypothesis: true difference in medians (%s minus %s) is %s 0\\n",
+    lv[1], lv[2],
+    switch(alt, "less" = "less than", "greater" = "greater than", "not equal to")))
+cat(sprintf("bootstrap p-value = %.5g\\n", p))
+cat(sprintf("%.0f percent confidence interval: %s %s\\n", conf*100, fmt_b(cil), fmt_b(ciu)))
+cat(sprintf("sample estimate, difference in medians = %.4f\\n", est))
+cat(sprintf("bootstrap SE of the difference = %.4f\\n", se))
+cat("\\np is the level at which the interval would just exclude zero, so the test\\n")
+cat("and the interval are the same event and cannot contradict each other.\\n")
+cat("\\nGroup medians:\\n")
+cat(sprintf("  %s: n = %d, Mdn = %.4f, IQR = %.4f\\n", lv[1], n1, md1, iqr1))
+cat(sprintf("  %s: n = %d, Mdn = %.4f, IQR = %.4f\\n", lv[2], n2, md2, iqr2))
+if (h1 == 0 || h2 == 0)
+  cat("\\nNOTE: a group has no usable spread, so no smoothing could be applied there\\n",
+      "      and it contributes an ordinary (unsmoothed) percentile bootstrap.\\n", sep = "")
+if (zw == 1)
+  cat("\\nNOTE: the interval has zero width. This happens when the data are coarsely\\n",
+      "      recorded and most observations equal the median.\\n", sep = "")
+if (max(iqr1, iqr2) > 0 && min(iqr1, iqr2) > 0 && max(iqr1, iqr2)/min(iqr1, iqr2) > 3)
+  cat("\\nNOTE: the group IQRs differ by more than a factor of 3. The method does not\\n",
+      "      assume equal spread, but coverage is least comfortable in that regime.\\n", sep = "")
+c(est=est, cil=cil, ciu=ciu, p=p, se=se,
+  n1=n1, md1=md1, iqr1=iqr1, n2=n2, md2=md2, iqr2=iqr2,
+  zw=zw, seedv=as.integer(seed))`,
+    render(R, ctx){
+      const [l1,l2]=ctx.levels.grp, grp=ctx.cols.grp, resp=ctx.cols.resp, ci=pct(ctx.conf);
+      const zwH = R.zw===1 ? ` The interval has zero width because the data are coarsely recorded and most observations equal the median.` : '';
+      return buildAPA({
+        title:`Descriptive Statistics and Bootstrap Median Difference for ${resp} by ${grp}`,
+        headers:[{t:grp},{t:'n',it:true,num:true},{t:'Mdn',it:true,num:true},{t:'IQR',it:true,num:true}],
+        rows:[
+          [{t:l1},{t:R.n1,num:true},{t:f2(R.md1),num:true},{t:f2(R.iqr1),num:true}],
+          [{t:l2},{t:R.n2,num:true},{t:f2(R.md2),num:true},{t:f2(R.iqr2),num:true}]
+        ],
+        note:{
+          html:`<i>Note.</i> Median difference (${l1} &minus; ${l2}) = ${f2(R.est)}, ${ci} CI [${fci(R.cil)}, ${fci(R.ciu)}], bootstrap <i>p</i> ${pFmt(R.p)}, ${sidedTxt(ctx.env.alt)}. The interval and the <i>p</i>-value come from a smoothed percentile bootstrap (2,000 resamples per group; seed ${R.seedv}); the <i>p</i>-value is the level at which the interval would just exclude zero, so the two agree by construction.${zwH} Mdn = median; IQR = interquartile range.`,
+          plain:`Note. Median difference (${l1} - ${l2}) = ${f2(R.est)}, ${ci} CI [${fci(R.cil)}, ${fci(R.ciu)}], bootstrap p ${pFmt(R.p)}, ${sidedTxt(ctx.env.alt)}. The interval and the p-value come from a smoothed percentile bootstrap (2,000 resamples per group; seed ${R.seedv}); the p-value is the level at which the interval would just exclude zero, so the two agree by construction.${zwH} Mdn = median; IQR = interquartile range.`
+        }
+      });
+    }
+  },
+
   onesample: {
     label: "One-sample t test (vs a hypothesized value) + Hedges' g",
     dropHint: "Any dataset: choose one numeric column and type the hypothesized mean to test against.",
@@ -2466,9 +2605,10 @@ const MENU_SECTIONS = [
     ['paired',  'Paired t-test for mean difference \u2014 repeated measures/matched pairs'],
     ['mcnemar', "McNemar's test for difference between paired proportions"]]],
   ['Two-Sample Tests \u2014 Independent', [
-    ['ind_means', "Welch's t-test for difference between means"],
-    ['brunner',   'Brunner-Munzel test for stochastic superiority \u2014 rank based'],
-    ['twoprop',   'z-test for difference between proportions']]],
+    ['ind_means',   "Welch's t-test for difference between means"],
+    ['twoprop',     'z-test for difference between proportions'],
+    ['ind_medians', 'Smoothed bootstrap for difference between medians'],
+    ['brunner',     'Brunner-Munzel test for stochastic superiority \u2014 rank based']]],
   ['Chi-square & Exact Tests', [
     ['gof',     'Goodness of Fit (GOF)'],
     ['emt_gof', 'Exact Multinomial Goodness of Fit (GOF, expected counts < 5)'],

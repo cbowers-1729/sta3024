@@ -21,8 +21,9 @@ optionally split by group, with a scatterplot when a second numeric variable is 
 **Two-sample, dependent.** Paired *t* test for a mean difference (repeated measures or matched
 pairs); McNemar's test for a difference between paired proportions.
 
-**Two-sample, independent.** Welch's *t* test with Hedges' *g\*ₛ*; Brunner-Munzel test for
-stochastic superiority; *z* test for a difference between proportions.
+**Two-sample, independent.** Welch's *t* test with Hedges' *g\*ₛ*; *z* test for a difference
+between proportions; smoothed percentile bootstrap for a difference between medians;
+Brunner-Munzel test for stochastic superiority.
 
 **Chi-square and exact tests.** Goodness of fit; exact multinomial goodness of fit for small
 expected counts; independence and homogeneity; Fisher's exact test.
