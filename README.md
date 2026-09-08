@@ -31,8 +31,8 @@ expected counts; independence and homogeneity; Fisher's exact test.
 
 **ANOVA.** One-way Welch's ANOVA with Games-Howell pairwise comparisons.
 
-**All pairwise differences.** Proportion differences (Newcombe); median differences (quantile
-regression, τ = 0.5); group standing in the combined sample (rank-based, MCTP); head-to-head rank
+**All pairwise differences.** Proportion differences (Newcombe); median differences (smoothed
+percentile bootstrap); group standing in the combined sample (rank-based, MCTP); head-to-head rank
 comparisons (pairwise Brunner-Munzel).
 
 ## Browser requirements
