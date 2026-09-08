@@ -1721,6 +1721,23 @@ norm_inter <- function(ts, a) {
   }
   out
 }
+# Two-sided p-value obtained by INVERTING the percentile interval above: the
+# smallest alpha at which the interval excludes the null value, doubled. The
+# bootstrap distribution of a median difference is skewed, so a symmetric
+# "how far from centre" p-value and an equal-tailed percentile interval are
+# different events and can disagree. Inverting makes them the same event, so a
+# Bonferroni p below alpha corresponds to an interval excluding zero exactly,
+# and under Holm only the informative disagreement remains possible (interval
+# excludes zero, adjusted p does not reject).
+perc_p <- function(ts, v0) {
+  R <- length(ts); floorp <- 1/(R + 1)
+  if (v0 <= ts[1] || v0 >= ts[R]) return(floorp)
+  a <- 0; b <- 1
+  for (it in 1:45) { mid <- (a + b)/2
+    if (norm_inter(ts, mid) < v0) a <- mid else b <- mid }
+  a0 <- (a + b)/2
+  max(min(1, 2*min(a0, 1 - a0)), floorp)
+}
 # Silverman and Young (1987) smoothing bandwidth.
 boot_bw <- function(x) {
   n <- length(x); s1 <- sd(x); s2 <- IQR(x)/1.349
@@ -1740,6 +1757,8 @@ for (i in 1:k) {
 
 cat("Pairwise median differences: smoothed percentile bootstrap\\n")
 cat("Resamples: ", B, " per group; seed ", as.integer(seed), "\\n", sep = "")
+cat("p(boot) is the level at which the interval would just exclude zero, so the\\n")
+cat("test and the interval are the same event and cannot contradict each other.\\n")
 if (bonf_on) {
   cat(sprintf("%d comparisons; Bonferroni-adjusted p-values; %.0f%% Bonferroni simultaneous CIs (per-interval %.4f)\\n\\n", m, conf*100, 1 - alpha_ci))
 } else if (m == 1) {
@@ -1758,10 +1777,10 @@ pr <- numeric(0); lo <- numeric(0); hi <- numeric(0); zw <- 0
 for (i in 1:(k-1)) for (j in (i+1):k) {
   e  <- mds[i] - mds[j]                 # point estimate: the raw median difference
   db <- MS[, i] - MS[, j]               # smoothed bootstrap distribution
-  cn <- db - e                          # centred: the null imposed
-  ee <- norm_inter(sort(db), c(alpha_ci/2, 1 - alpha_ci/2))
-  sdev <- sd(cn)
-  p  <- (1 + sum(abs(cn) >= abs(e))) / (B + 1)
+  dbs <- sort(db)
+  ee <- norm_inter(dbs, c(alpha_ci/2, 1 - alpha_ci/2))
+  sdev <- sd(db)
+  p  <- perc_p(dbs, 0)                  # inverts the interval on the line above
   gi <- c(gi, lv[i]); gj <- c(gj, lv[j]); est <- c(est, e)
   se <- c(se, sdev); zv <- c(zv, if (sdev > 0) e/sdev else NA_real_); pr <- c(pr, p)
   lo <- c(lo, ee[1]); hi <- c(hi, ee[2])
