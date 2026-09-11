@@ -78,6 +78,9 @@
   table.apa-tbl tbody tr:last-child td{border-bottom:1.5px solid var(--ink)}
   table.apa-tbl td.num,table.apa-tbl th.num{font-family:"IBM Plex Mono",monospace; font-variant-numeric:tabular-nums}
   .apa .note{font-size:12.5px; color:var(--ink-soft); margin:11px 0 0; line-height:1.5}
+  .rescale-flag{margin-top:16px; padding:10px 12px; border-left:3px solid #b45309;
+    background:#fffbeb; border-radius:0 6px 6px 0; font-size:12.5px; line-height:1.5}
+  .rescale-flag p{margin:0 0 6px} .rescale-flag p:last-child{margin-bottom:0}
   .methodnote{margin-top:16px; font-size:12.5px; color:var(--ink-soft); line-height:1.55;
     border-left:3px solid var(--accent); background:var(--accent-soft); padding:10px 14px; border-radius:0 6px 6px 0}
   .methodnote b{color:var(--ink)}
@@ -273,33 +276,92 @@
 import { WebR } from 'https://webr.r-wasm.org/v0.6.0/webr.mjs';
 
 /* ============================ shared formatters ============================ */
-// APA 7 (6.36): keep the leading zero when a statistic CAN reach 1 in absolute
-// value; drop it only when it cannot. f2 = keeps it, nz/nzsig = drop it.
+// APA 7 (6.36): "round as much as possible while considering prospective use and
+// statistical precision." Two decimals is the default, not the rule, and the
+// precision clause overrides it. Precision is therefore taken from the standard
+// error wherever the estimate has one: show the SE to two significant digits and
+// match the estimate to that decimal place. The SE only sets the precision here;
+// it is never printed as a column.
+//
+// This applies to quantities in the outcome's own units (means, SDs, mean and
+// median differences, regression coefficients), which is where a coarse scale can
+// hide a finding: a CI of [0.0020, 0.0302] must not print as [0.00, 0.03] beside a
+// significant p. Quantities already on a fixed scale (proportions, relative
+// effects, correlations, standardized effect sizes) stay at two decimals, since
+// there is no scale to change.
+//
+// Leading zero: kept when a statistic CAN reach 1 in absolute value (f2), dropped
+// when it cannot (nz).
 // MINUS: set to '\u2212' for a typographic minus sign in the copied output.
 const MINUS = '-';
 const noNegZero = s => /^-0(\.0*)?$/.test(s) ? s.slice(1) : s;   // never print -0.00
-const f2 = (x,d=2)=>{ const v=Number(x); if(!Number.isFinite(v)) return String(x);
-  return noNegZero(v.toFixed(d)).replace(/^-/, MINUS); };
-const nz = (x,d=2)=>{ const v=Number(x); if(!Number.isFinite(v)) return String(x);
-  const s = noNegZero((v<0?'-':'')+Math.abs(v).toFixed(d));
-  return s.replace(/^(-?)0\./,'$1.').replace(/^-/, MINUS); };
+
+// Flags raised while a table is being formatted. They are advice to the person
+// running the tool, not part of the table, so they render under the APA panel and
+// stay out of the Copy table output.
+let PRECISION_FLAGS = [];
+const clearFlags = () => { PRECISION_FLAGS = []; };
+const addFlag = (key, html) => { if(!PRECISION_FLAGS.some(f=>f.key===key)) PRECISION_FLAGS.push({key, html}); };
+const flagHtml = () => PRECISION_FLAGS.length
+  ? `<div class="rescale-flag">${PRECISION_FLAGS.map(f=>`<p>${f.html}</p>`).join('')}</div>` : '';
+// Single mount point for the APA panel, so every module gets the flags.
+function setAPA(html){
+  document.getElementById('apa').innerHTML = html + flagHtml();
+  clearFlags();
+}
+
+const DIG_MIN = 2, DIG_MAX = 8, DIG_FLAG = 4;
+// Two significant digits on the SE, i.e. 1 - floor(log10(SE)) decimals. Given
+// several SEs for one column, the smallest wins, so the most precisely estimated
+// row in the column is never under-reported. Floored at APA's default two decimals
+// and capped so a degenerate SE cannot run the table off the page.
+function seDigits(...ses){
+  const v = ses.flat().map(Number).filter(x => Number.isFinite(x) && x > 0);
+  if(!v.length) return DIG_MIN;
+  const d = Math.max(DIG_MIN, Math.min(DIG_MAX, 1 - Math.floor(Math.log10(Math.min(...v)))));
+  if(d > DIG_FLAG) addFlag('precision',
+    `<b>Consider rescaling.</b> The standard errors here call for ${d} decimals, well past APA's default two. Reporting on a rescaled metric (per 100, or per 1,000 for a small proportion) and saying so in the note would let the table read at two decimals without losing precision.`);
+  return d;
+}
+
+// Standard error of a proportion, sqrt(p(1-p)/n), and of a difference between two
+// independent proportions. The Wilson and Newcombe intervals are score-based and have
+// no standard error of their own, but the estimate does, and that is what sets the
+// number of decimals. Returns NaN at p = 0 or 1, which seDigits ignores.
+const seProp = (p, n) => (Number.isFinite(Number(p)) && Number(n) > 0 && p > 0 && p < 1)
+  ? Math.sqrt(p*(1-p)/n) : NaN;
+const seDiffProp = (p1,n1,p2,n2) => Math.sqrt(Math.pow(seProp(p1,n1),2) + Math.pow(seProp(p2,n2),2));
+
+// Shared body for f2/nz. A nonzero value too small to show at d decimals is
+// reported as a bound at the last decimal place rather than as a row of zeros,
+// because "0.00" next to a significant p is a false statement about the estimate.
+function fmtNum(x, d, lead){
+  const v = Number(x); if(!Number.isFinite(v)) return String(x);
+  const unit = Math.pow(10, -d);
+  let s, pre = '';
+  if(v !== 0 && Math.abs(v) < unit/2){
+    // Which advice applies depends on the quantity. lead=true means it can exceed 1,
+    // so it is in the outcome's units and rescaling is available; lead=false means a
+    // proportion, correlation, or other bounded index, where there is no scale to change.
+    if(lead) addFlag('truncated',
+      `<b>Consider rescaling.</b> A nonzero value is smaller than the last decimal place shown, so it is reported as a bound instead of as zero. Multiplying the outcome by a constant (100, say) would let it print as a number. The R console keeps the full precision either way.`);
+    else addFlag('bounded',
+      `<b>Below the last decimal place.</b> A bounded quantity (a proportion, correlation, or similar) is smaller than the last decimal shown, so it is reported as a bound rather than as zero. There is no scale to change here; the exact value is in the R console.`);
+    pre = v > 0 ? '< ' : '> ';
+    s = (v > 0 ? '' : '-') + unit.toFixed(d);
+  } else {
+    s = noNegZero((v<0?'-':'') + Math.abs(v).toFixed(d));
+  }
+  if(!lead) s = s.replace(/^(-?)0\./, '$1.');
+  return pre + s.replace(/^-/, MINUS);
+}
+const f2 = (x, d=2) => fmtNum(x, d, true);
+const nz = (x, d=2) => fmtNum(x, d, false);
 // df: integer when the df is an integer (one-sample, paired, chi-square),
 // two decimals when it is fractional (Welch, Brunner-Munzel).
 const fdf = (x)=>{ const v=Number(x); if(!Number.isFinite(v)) return String(x);
   return Math.abs(v-Math.round(v)) < 1e-8 ? String(Math.round(v)) : v.toFixed(2); };
 const pct = (c)=> Math.round(Number(c)*100)+'%';
-// adaptive precision: 2 decimals normally, but keep ~2 significant figures for very small magnitudes
-const fsig = (x)=>{ const v=Number(x); if(!Number.isFinite(v)) return String(x);
-  if(v===0) return '0.00';
-  const a=Math.abs(v); if(a>=0.10) return v.toFixed(2);
-  const d=Math.min(8, 1-Math.floor(Math.log10(a))+1); return v.toFixed(d); };
-// adaptive proportion/effect formatter: strips leading zero, keeps ~2 sig figs when small
-const nzsig = (x)=>{ const v=Number(x); if(!Number.isFinite(v)) return String(x);
-  if(v===0) return '.00';
-  const a=Math.abs(v);
-  let s; if(a>=0.10) s=a.toFixed(2);
-  else { const d=Math.min(8, -Math.floor(Math.log10(a))+1); s=a.toFixed(d); }
-  return noNegZero((v<0?'-':'') + s).replace(/^0/,'').replace(/^-0/, MINUS).replace(/^-/, MINUS); };
 const pFmt = p => p < .001 ? '< .001' : '= ' + nz(p,3);
 
 /* ============================ APA table builder ============================ */
@@ -413,7 +475,10 @@ function edaStatsBuild(vals, groups, vname, gname){
   else rows.push([vname, summ(vals)]);
   const labHead = groups ? gname : 'Variable';
   const statHead = ['n','M','SD','SEM','Min','Q1','Mdn','Q3','Max'];
-  const cells = s => [String(s.n), f2(s.mean), f2(s.sd), f2(s.sem), f2(s.min), f2(s.q1), f2(s.mdn), f2(s.q3), f2(s.max)];
+  // Every column here is in the outcome's own units, so one precision governs the
+  // whole numeric block, taken from the smallest standard error of the mean.
+  const D = seDigits(rows.map(([,s])=>s.sem));
+  const cells = s => [String(s.n), f2(s.mean,D), f2(s.sd,D), f2(s.sem,D), f2(s.min,D), f2(s.q1,D), f2(s.mdn,D), f2(s.q3,D), f2(s.max,D)];
 
   const head = `<th>${labHead}</th>`+statHead
     .map(h=>`<th class="num"><span style="font-style:italic">${h}</span></th>`).join('');
@@ -503,8 +568,10 @@ async function drawEDA(env, cols, active){
   const shelter = await new webR.Shelter();
   try{
     const cap = await shelter.captureR(code, { env, captureGraphics:{ width:820, height:460 } });
+    clearFlags();
     const st = edaStatsBuild(env.variable, env.group||null, cols.variable, cols.group);
-    document.getElementById('edaStats').innerHTML = st.screenHtml;
+    document.getElementById('edaStats').innerHTML = st.screenHtml + flagHtml();
+    clearFlags();
     lastEdaStats = { htmlTable: st.copyHtml, plain: st.plain };
     const wrap=document.getElementById('edaPlots'); wrap.innerHTML='';
     (cap.images||[]).forEach((img,i)=>{
@@ -546,7 +613,7 @@ const TESTS = {
       { key:'grp',  kind:'group2',  label:'Group — must have exactly 2 levels' }
     ],
     defaults: { resp:'bwt', grp:'smoke' },
-    resultKeys: ['t','df','p','md','cil','ciu','g','gl','gu','m1','s1','n1','m2','s2','n2'],
+    resultKeys: ['t','df','p','md','cil','ciu','g','gl','gu','m1','s1','n1','m2','s2','n2','se'],
     rProgram: FIND_NCP + `
 g.star.ci <- function(x.bar.1, x.bar.2, s.1, s.2, n.1, n.2, alpha) {
   df.star <- (n.1-1)*(n.2-1)*(s.1^2+s.2^2)^2/((n.2-1)*s.1^4 + (n.1-1)*s.2^4)
@@ -573,19 +640,22 @@ cat(sprintf("Hedges g*s = %.3f, %.0f%% CI [%.3f, %.3f]\\n", g$g.star, conf*100, 
 c(t=unname(tt$statistic), df=unname(tt$parameter), p=tt$p.value,
   md=m1-m2, cil=tt$conf.int[1], ciu=tt$conf.int[2],
   g=g$g.star, gl=g$g.star.low, gu=g$g.star.up,
-  m1=m1, s1=s1, n1=n1, m2=m2, s2=s2, n2=n2)`,
+  m1=m1, s1=s1, n1=n1, m2=m2, s2=s2, n2=n2,
+  se=sqrt(s1^2/n1 + s2^2/n2))`,
     render(R, ctx){
       const [l1,l2] = ctx.levels.grp, grp = ctx.cols.grp, resp = ctx.cols.resp;
+      const Dg = seDigits(R.s1/Math.sqrt(R.n1), R.s2/Math.sqrt(R.n2));   // descriptives
+      const Dd = seDigits(R.se);                                         // mean difference
       return buildAPA({
         title:`Descriptive Statistics and Welch's t Test for ${resp} by ${grp}`,
         headers:[{t:grp},{t:'n',it:true,num:true},{t:'M',it:true,num:true},{t:'SD',it:true,num:true}],
         rows:[
-          [{t:l1},{t:R.n1,num:true},{t:f2(R.m1),num:true},{t:f2(R.s1),num:true}],
-          [{t:l2},{t:R.n2,num:true},{t:f2(R.m2),num:true},{t:f2(R.s2),num:true}]
+          [{t:l1},{t:R.n1,num:true},{t:f2(R.m1,Dg),num:true},{t:f2(R.s1,Dg),num:true}],
+          [{t:l2},{t:R.n2,num:true},{t:f2(R.m2,Dg),num:true},{t:f2(R.s2,Dg),num:true}]
         ],
         note:{
-          html:`<i>Note.</i> Welch's <i>t</i>(${fdf(R.df)}) = ${f2(R.t)}, <i>p</i> ${pFmt(R.p)}, ${sidedTxt(ctx.env.alt)}. Mean difference (${l1} &minus; ${l2}) = ${f2(R.md)}, ${pct(ctx.conf)} CI [${fci(R.cil)}, ${fci(R.ciu)}]. Hedges' <i>g*</i><sub>s</sub> = ${f2(R.g)}, ${pct(ctx.conf)} CI [${f2(R.gl)}, ${f2(R.gu)}].`,
-          plain:`Note. Welch's t(${fdf(R.df)}) = ${f2(R.t)}, p ${pFmt(R.p)}, ${sidedTxt(ctx.env.alt)}. Mean difference (${l1} - ${l2}) = ${f2(R.md)}, ${pct(ctx.conf)} CI [${fci(R.cil)}, ${fci(R.ciu)}]. Hedges' g*s = ${f2(R.g)}, ${pct(ctx.conf)} CI [${f2(R.gl)}, ${f2(R.gu)}].`
+          html:`<i>Note.</i> Welch's <i>t</i>(${fdf(R.df)}) = ${f2(R.t)}, <i>p</i> ${pFmt(R.p)}, ${sidedTxt(ctx.env.alt)}. Mean difference (${l1} &minus; ${l2}) = ${f2(R.md,Dd)}, ${pct(ctx.conf)} CI [${fci(R.cil,Dd)}, ${fci(R.ciu,Dd)}]. Hedges' <i>g*</i><sub>s</sub> = ${f2(R.g)}, ${pct(ctx.conf)} CI [${f2(R.gl)}, ${f2(R.gu)}].`,
+          plain:`Note. Welch's t(${fdf(R.df)}) = ${f2(R.t)}, p ${pFmt(R.p)}, ${sidedTxt(ctx.env.alt)}. Mean difference (${l1} - ${l2}) = ${f2(R.md,Dd)}, ${pct(ctx.conf)} CI [${fci(R.cil,Dd)}, ${fci(R.ciu,Dd)}]. Hedges' g*s = ${f2(R.g)}, ${pct(ctx.conf)} CI [${f2(R.gl)}, ${f2(R.gu)}].`
         }
       });
     }
@@ -623,16 +693,18 @@ c(t=t.obs, df=df, p=tt$p.value, md=md, cil=tt$conf.int[1], ciu=tt$conf.int[2],
   mpre=mean(x), sdpre=sd(x), mpost=mean(y), sdpost=sd(y))`,
     render(R, ctx){
       const pre = ctx.cols.pre, post = ctx.cols.post;
+      const Dg = seDigits(R.sdpre/Math.sqrt(R.n), R.sdpost/Math.sqrt(R.n));   // descriptives
+      const Dd = seDigits(R.sdd/Math.sqrt(R.n));                              // mean difference
       return buildAPA({
         title:`Descriptive Statistics and Paired-Samples t Test for ${pre} and ${post}`,
         headers:[{t:'Condition'},{t:'n',it:true,num:true},{t:'M',it:true,num:true},{t:'SD',it:true,num:true}],
         rows:[
-          [{t:pre},{t:R.n,num:true},{t:f2(R.mpre),num:true},{t:f2(R.sdpre),num:true}],
-          [{t:post},{t:R.n,num:true},{t:f2(R.mpost),num:true},{t:f2(R.sdpost),num:true}]
+          [{t:pre},{t:R.n,num:true},{t:f2(R.mpre,Dg),num:true},{t:f2(R.sdpre,Dg),num:true}],
+          [{t:post},{t:R.n,num:true},{t:f2(R.mpost,Dg),num:true},{t:f2(R.sdpost,Dg),num:true}]
         ],
         note:{
-          html:`<i>Note.</i> Paired <i>t</i>(${fdf(R.df)}) = ${f2(R.t)}, <i>p</i> ${pFmt(R.p)}, ${sidedTxt(ctx.env.alt)}. Mean difference (${pre} &minus; ${post}) = ${f2(R.md)}, ${pct(ctx.conf)} CI [${fci(R.cil)}, ${fci(R.ciu)}]. Hedges' <i>g</i><sub>z</sub> = ${f2(R.g)}, ${pct(ctx.conf)} CI [${f2(R.gl)}, ${f2(R.gu)}].`,
-          plain:`Note. Paired t(${fdf(R.df)}) = ${f2(R.t)}, p ${pFmt(R.p)}, ${sidedTxt(ctx.env.alt)}. Mean difference (${pre} - ${post}) = ${f2(R.md)}, ${pct(ctx.conf)} CI [${fci(R.cil)}, ${fci(R.ciu)}]. Hedges' g_z = ${f2(R.g)}, ${pct(ctx.conf)} CI [${f2(R.gl)}, ${f2(R.gu)}].`
+          html:`<i>Note.</i> Paired <i>t</i>(${fdf(R.df)}) = ${f2(R.t)}, <i>p</i> ${pFmt(R.p)}, ${sidedTxt(ctx.env.alt)}. Mean difference (${pre} &minus; ${post}) = ${f2(R.md,Dd)}, ${pct(ctx.conf)} CI [${fci(R.cil,Dd)}, ${fci(R.ciu,Dd)}]. Hedges' <i>g</i><sub>z</sub> = ${f2(R.g)}, ${pct(ctx.conf)} CI [${f2(R.gl)}, ${f2(R.gu)}].`,
+          plain:`Note. Paired t(${fdf(R.df)}) = ${f2(R.t)}, p ${pFmt(R.p)}, ${sidedTxt(ctx.env.alt)}. Mean difference (${pre} - ${post}) = ${f2(R.md,Dd)}, ${pct(ctx.conf)} CI [${fci(R.cil,Dd)}, ${fci(R.ciu,Dd)}]. Hedges' g_z = ${f2(R.g)}, ${pct(ctx.conf)} CI [${f2(R.gl)}, ${f2(R.gu)}].`
         }
       });
     }
@@ -820,17 +892,20 @@ c(est=est, cil=cil, ciu=ciu, p=p, se=se,
   zw=zw, seedv=as.integer(seed))`,
     render(R, ctx){
       const [l1,l2]=ctx.levels.grp, grp=ctx.cols.grp, resp=ctx.cols.resp, ci=pct(ctx.conf);
+      // The bootstrap SE of the difference is the only precision yardstick here, and
+      // the descriptives are in the same units, so one precision governs both.
+      const D = seDigits(R.se);
       const zwH = R.zw===1 ? ` The interval has zero width because the data are coarsely recorded and most observations equal the median.` : '';
       return buildAPA({
         title:`Descriptive Statistics and Bootstrap Median Difference for ${resp} by ${grp}`,
         headers:[{t:grp},{t:'n',it:true,num:true},{t:'Mdn',it:true,num:true},{t:'IQR',it:true,num:true}],
         rows:[
-          [{t:l1},{t:R.n1,num:true},{t:f2(R.md1),num:true},{t:f2(R.iqr1),num:true}],
-          [{t:l2},{t:R.n2,num:true},{t:f2(R.md2),num:true},{t:f2(R.iqr2),num:true}]
+          [{t:l1},{t:R.n1,num:true},{t:f2(R.md1,D),num:true},{t:f2(R.iqr1,D),num:true}],
+          [{t:l2},{t:R.n2,num:true},{t:f2(R.md2,D),num:true},{t:f2(R.iqr2,D),num:true}]
         ],
         note:{
-          html:`<i>Note.</i> Median difference (${l1} &minus; ${l2}) = ${f2(R.est)}, ${ci} CI [${fci(R.cil)}, ${fci(R.ciu)}], bootstrap <i>p</i> ${pFmt(R.p)}, ${sidedTxt(ctx.env.alt)}. The interval and the <i>p</i>-value come from a smoothed percentile bootstrap (2,000 resamples per group; seed ${R.seedv}); the <i>p</i>-value is the level at which the interval would just exclude zero, so the two agree by construction.${zwH} Mdn = median; IQR = interquartile range.`,
-          plain:`Note. Median difference (${l1} - ${l2}) = ${f2(R.est)}, ${ci} CI [${fci(R.cil)}, ${fci(R.ciu)}], bootstrap p ${pFmt(R.p)}, ${sidedTxt(ctx.env.alt)}. The interval and the p-value come from a smoothed percentile bootstrap (2,000 resamples per group; seed ${R.seedv}); the p-value is the level at which the interval would just exclude zero, so the two agree by construction.${zwH} Mdn = median; IQR = interquartile range.`
+          html:`<i>Note.</i> Median difference (${l1} &minus; ${l2}) = ${f2(R.est,D)}, ${ci} CI [${fci(R.cil,D)}, ${fci(R.ciu,D)}], bootstrap <i>p</i> ${pFmt(R.p)}, ${sidedTxt(ctx.env.alt)}. The interval and the <i>p</i>-value come from a smoothed percentile bootstrap (2,000 resamples per group; seed ${R.seedv}); the <i>p</i>-value is the level at which the interval would just exclude zero, so the two agree by construction.${zwH} Mdn = median; IQR = interquartile range.`,
+          plain:`Note. Median difference (${l1} - ${l2}) = ${f2(R.est,D)}, ${ci} CI [${fci(R.cil,D)}, ${fci(R.ciu,D)}], bootstrap p ${pFmt(R.p)}, ${sidedTxt(ctx.env.alt)}. The interval and the p-value come from a smoothed percentile bootstrap (2,000 resamples per group; seed ${R.seedv}); the p-value is the level at which the interval would just exclude zero, so the two agree by construction.${zwH} Mdn = median; IQR = interquartile range.`
         }
       });
     }
@@ -867,16 +942,17 @@ c(t=t.obs, df=df, p=tt$p.value, m=m, s=s, n=n, mu0=mu0,
   cil=tt$conf.int[1], ciu=tt$conf.int[2], g=g, gl=g.low, gu=g.up)`,
     render(R, ctx){
       const resp = ctx.cols.resp;
-      const mu = Number.isInteger(R.mu0) ? R.mu0 : f2(R.mu0);
+      const D = seDigits(R.s/Math.sqrt(R.n));   // SE of the mean governs M, SD and the CI
+      const mu = String(R.mu0);   // the typed test value is exact: print it as given
       return buildAPA({
         title:`Descriptive Statistics and One-Sample t Test for ${resp} (test value = ${mu})`,
         headers:[{t:'Variable'},{t:'n',it:true,num:true},{t:'M',it:true,num:true},{t:'SD',it:true,num:true}],
         rows:[
-          [{t:resp},{t:R.n,num:true},{t:f2(R.m),num:true},{t:f2(R.s),num:true}]
+          [{t:resp},{t:R.n,num:true},{t:f2(R.m,D),num:true},{t:f2(R.s,D),num:true}]
         ],
         note:{
-          html:`<i>Note.</i> One-sample <i>t</i>(${fdf(R.df)}) = ${f2(R.t)}, <i>p</i> ${pFmt(R.p)}, ${sidedTxt(ctx.env.alt)}, test value = ${mu}. ${pct(ctx.conf)} CI for the mean [${fci(R.cil)}, ${fci(R.ciu)}]. Hedges' <i>g</i> = ${f2(R.g)}, ${pct(ctx.conf)} CI [${f2(R.gl)}, ${f2(R.gu)}].`,
-          plain:`Note. One-sample t(${fdf(R.df)}) = ${f2(R.t)}, p ${pFmt(R.p)}, ${sidedTxt(ctx.env.alt)}, test value = ${mu}. ${pct(ctx.conf)} CI for the mean [${fci(R.cil)}, ${fci(R.ciu)}]. Hedges' g = ${f2(R.g)}, ${pct(ctx.conf)} CI [${f2(R.gl)}, ${f2(R.gu)}].`
+          html:`<i>Note.</i> One-sample <i>t</i>(${fdf(R.df)}) = ${f2(R.t)}, <i>p</i> ${pFmt(R.p)}, ${sidedTxt(ctx.env.alt)}, test value = ${mu}. ${pct(ctx.conf)} CI for the mean [${fci(R.cil,D)}, ${fci(R.ciu,D)}]. Hedges' <i>g</i> = ${f2(R.g)}, ${pct(ctx.conf)} CI [${f2(R.gl)}, ${f2(R.gu)}].`,
+          plain:`Note. One-sample t(${fdf(R.df)}) = ${f2(R.t)}, p ${pFmt(R.p)}, ${sidedTxt(ctx.env.alt)}, test value = ${mu}. ${pct(ctx.conf)} CI for the mean [${fci(R.cil,D)}, ${fci(R.ciu,D)}]. Hedges' g = ${f2(R.g)}, ${pct(ctx.conf)} CI [${f2(R.gl)}, ${f2(R.gu)}].`
         }
       });
     }
@@ -949,7 +1025,7 @@ list(chi2 = unname(ct$statistic), df = unname(ct$parameter), p = ct$p.value,
           }
         });
         document.getElementById('console').textContent = consoleText;
-        document.getElementById('apa').innerHTML = main.screenHtml + sub2(t2);
+        setAPA(main.screenHtml + sub2(t2));
         lastResult = {
           plain: `${main.plain}\n\n${t2.plain}`,
           htmlTable: main.copyHtml + '<br>' + t2.copyHtml
@@ -1016,7 +1092,7 @@ list(chi2 = unname(ct$statistic), df = unname(ct$parameter), p = ct$p.value, N =
         };
         const out = buildAPA({ title:`Goodness-of-Fit Test for ${varName}`, headers, rows, note });
         document.getElementById('console').textContent = consoleText;
-        document.getElementById('apa').innerHTML = out.screenHtml;
+        setAPA(out.screenHtml);
         lastResult = { plain: out.plain, htmlTable: out.copyHtml };
         document.getElementById('outStep').classList.remove('hidden');
         const confPct = Math.round(env.conf*100);
@@ -1133,13 +1209,14 @@ c(x=x, n=n, phat=phat, z=zstat, p=ptst$p.value, cil=ptst$conf.int[1], ciu=ptst$c
   h2=h2, h2l=h2.low, h2u=h2.up)`,
     render(R, ctx){
       const outcome = ctx.cols.outcome, success = ctx.env.success;
+      const D = seDigits(seProp(R.phat, R.n));
       return buildAPA({
         title:`One-Sample Proportion Test for ${outcome} (success = ${success})`,
         headers:[{t:'Category'},{t:'x',it:true,num:true},{t:'n',it:true,num:true},{t:'p\u0302',num:true}],
-        rows:[[{t:success},{t:R.x,num:true},{t:R.n,num:true},{t:nzsig(R.phat)}]],
+        rows:[[{t:success},{t:R.x,num:true},{t:R.n,num:true},{t:nz(R.phat,D)}]],
         note:{
-          html:`<i>Note.</i> <i>z</i> = ${f2(R.z)}, <i>p</i> ${pFmt(R.p)}, ${sidedTxt(ctx.env.alt)}, test value = ${nzsig(R.p0)}. Sample proportion <i>p&#770;</i> = ${nzsig(R.phat)}, ${pct(ctx.conf)} Wilson CI [${nzsig(R.cil)}, ${nzsig(R.ciu)}]. Cohen's <i>h</i><sub>2</sub> = ${f2(R.h2)}, ${pct(ctx.conf)} CI [${f2(R.h2l)}, ${f2(R.h2u)}].`,
-          plain:`Note. z = ${f2(R.z)}, p ${pFmt(R.p)}, ${sidedTxt(ctx.env.alt)}, test value = ${nzsig(R.p0)}. Sample proportion p-hat = ${nzsig(R.phat)}, ${pct(ctx.conf)} Wilson CI [${nzsig(R.cil)}, ${nzsig(R.ciu)}]. Cohen's h2 = ${f2(R.h2)}, ${pct(ctx.conf)} CI [${f2(R.h2l)}, ${f2(R.h2u)}].`
+          html:`<i>Note.</i> <i>z</i> = ${f2(R.z)}, <i>p</i> ${pFmt(R.p)}, ${sidedTxt(ctx.env.alt)}, test value = ${nz(R.p0,D)}. Sample proportion <i>p&#770;</i> = ${nz(R.phat,D)}, ${pct(ctx.conf)} Wilson CI [${nz(R.cil,D)}, ${nz(R.ciu,D)}]. Cohen's <i>h</i><sub>2</sub> = ${f2(R.h2)}, ${pct(ctx.conf)} CI [${f2(R.h2l)}, ${f2(R.h2u)}].`,
+          plain:`Note. z = ${f2(R.z)}, p ${pFmt(R.p)}, ${sidedTxt(ctx.env.alt)}, test value = ${nz(R.p0,D)}. Sample proportion p-hat = ${nz(R.phat,D)}, ${pct(ctx.conf)} Wilson CI [${nz(R.cil,D)}, ${nz(R.ciu,D)}]. Cohen's h2 = ${f2(R.h2)}, ${pct(ctx.conf)} CI [${f2(R.h2l)}, ${f2(R.h2u)}].`
         }
       });
     }
@@ -1325,17 +1402,19 @@ c(x1=x1,n1=n1,p1=p1, x2=x2,n2=n2,p2=p2, z=zstat, p=ptst$p.value,
       const outcome=ctx.cols.outcome, group=ctx.cols.group, success=ctx.env.success;
       const [g1,g2]=ctx.levels.group, ci=pct(ctx.conf);
       const hacH = R.hac===1 ? ` A Haldane\u2013Anscombe correction (+0.5 per cell) was applied to RR and OR because a cell count was zero (Haldane, 1956; Anscombe, 1956).` : '';
+      const Dp = seDigits(seProp(R.p1,R.n1), seProp(R.p2,R.n2));          // the p-hat column
+      const Dd = seDigits(seDiffProp(R.p1,R.n1,R.p2,R.n2));                // the difference
       const hacP = R.hac===1 ? ` A Haldane-Anscombe correction (+0.5 per cell) was applied to RR and OR because a cell count was zero (Haldane, 1956; Anscombe, 1956).` : '';
       return buildAPA({
         title:`Two-Proportion Test for ${outcome} (success = ${success}) by ${group}`,
         headers:[{t:group},{t:'x',it:true,num:true},{t:'n',it:true,num:true},{t:'p\u0302',num:true}],
         rows:[
-          [{t:g1},{t:R.x1,num:true},{t:R.n1,num:true},{t:nzsig(R.p1)}],
-          [{t:g2},{t:R.x2,num:true},{t:R.n2,num:true},{t:nzsig(R.p2)}]
+          [{t:g1},{t:R.x1,num:true},{t:R.n1,num:true},{t:nz(R.p1,Dp)}],
+          [{t:g2},{t:R.x2,num:true},{t:R.n2,num:true},{t:nz(R.p2,Dp)}]
         ],
         note:{
-          html:`<i>Note.</i> <i>z</i> = ${f2(R.z)}, <i>p</i> ${pFmt(R.p)}, ${sidedTxt(ctx.env.alt)}. Difference (<i>p&#770;</i><sub>${g1}</sub> \u2212 <i>p&#770;</i><sub>${g2}</sub>) = ${nzsig(R.diff)}, ${ci} Newcombe CI [${nzsig(R.dlo)}, ${nzsig(R.dup)}]. Cohen's <i>h</i> = ${f2(R.h)}, ${ci} CI [${f2(R.hlo)}, ${f2(R.hup)}]. Risk ratio = ${f2(R.RR)}, ${ci} CI [${f2(R.rrlo)}, ${f2(R.rrup)}]. Odds ratio = ${f2(R.OR)}, ${ci} CI [${f2(R.orlo)}, ${f2(R.orup)}].${hacH}`,
-          plain:`Note. z = ${f2(R.z)}, p ${pFmt(R.p)}, ${sidedTxt(ctx.env.alt)}. Difference (p-hat[${g1}] - p-hat[${g2}]) = ${nzsig(R.diff)}, ${ci} Newcombe CI [${nzsig(R.dlo)}, ${nzsig(R.dup)}]. Cohen's h = ${f2(R.h)}, ${ci} CI [${f2(R.hlo)}, ${f2(R.hup)}]. Risk ratio = ${f2(R.RR)}, ${ci} CI [${f2(R.rrlo)}, ${f2(R.rrup)}]. Odds ratio = ${f2(R.OR)}, ${ci} CI [${f2(R.orlo)}, ${f2(R.orup)}].${hacP}`
+          html:`<i>Note.</i> <i>z</i> = ${f2(R.z)}, <i>p</i> ${pFmt(R.p)}, ${sidedTxt(ctx.env.alt)}. Difference (<i>p&#770;</i><sub>${g1}</sub> \u2212 <i>p&#770;</i><sub>${g2}</sub>) = ${nz(R.diff,Dd)}, ${ci} Newcombe CI [${nz(R.dlo,Dd)}, ${nz(R.dup,Dd)}]. Cohen's <i>h</i> = ${f2(R.h)}, ${ci} CI [${f2(R.hlo)}, ${f2(R.hup)}]. Risk ratio = ${f2(R.RR)}, ${ci} CI [${f2(R.rrlo)}, ${f2(R.rrup)}]. Odds ratio = ${f2(R.OR)}, ${ci} CI [${f2(R.orlo)}, ${f2(R.orup)}].${hacH}`,
+          plain:`Note. z = ${f2(R.z)}, p ${pFmt(R.p)}, ${sidedTxt(ctx.env.alt)}. Difference (p-hat[${g1}] - p-hat[${g2}]) = ${nz(R.diff,Dd)}, ${ci} Newcombe CI [${nz(R.dlo,Dd)}, ${nz(R.dup,Dd)}]. Cohen's h = ${f2(R.h)}, ${ci} CI [${f2(R.hlo)}, ${f2(R.hup)}]. Risk ratio = ${f2(R.RR)}, ${ci} CI [${f2(R.rrlo)}, ${f2(R.rrup)}]. Odds ratio = ${f2(R.OR)}, ${ci} CI [${f2(R.orlo)}, ${f2(R.orup)}].${hacP}`
         }
       });
     }
@@ -1423,8 +1502,14 @@ list(lv = lv, xs = xs, ns = ns, ps = ps, k = k, m = m,
         const k=R.k[0], m=R.m[0], lv=R.lv;
         const MB = multBits(multOn(env), m, ci);
         const pcell = p => p < .001 ? '< .001' : nz(p,3);
+        // Precision from sqrt(p(1-p)/n): the group column from the smallest group SE,
+        // the difference column from the smallest SE of a pairwise difference.
+        const Dp = seDigits(lv.map((_,i)=>seProp(R.ps[i], R.ns[i])));
+        const dse = [];
+        for(let i=0;i<k-1;i++) for(let j=i+1;j<k;j++) dse.push(seDiffProp(R.ps[i],R.ns[i],R.ps[j],R.ns[j]));
+        const Dd = seDigits(dse);
         const rows = lv.map((g,i)=>[
-          {t:String(g)},{t:R.xs[i],num:true},{t:R.ns[i],num:true},{t:nzsig(R.ps[i])}
+          {t:String(g)},{t:R.xs[i],num:true},{t:R.ns[i],num:true},{t:nz(R.ps[i],Dp)}
         ]);
         const note = {
           html:`<i>Note.</i> All pairwise differences in the proportion of ${outcome} = ${success}, each interval a Newcombe hybrid-score interval. ${MB.methHtml}`,
@@ -1439,8 +1524,8 @@ list(lv = lv, xs = xs, ns = ns, ps = ps, k = k, m = m,
         for(let r=0;r<m;r++){
           pairRows.push([
             {t:`${String(R.gi[r])} \u2212 ${String(R.gj[r])}`},
-            {t:nzsig(R.dv[r]),num:true},
-            {t:`[${nzsig(R.lo[r])}, ${nzsig(R.hi[r])}]`,num:true},
+            {t:nz(R.dv[r],Dd),num:true},
+            {t:`[${nz(R.lo[r],Dd)}, ${nz(R.hi[r],Dd)}]`,num:true},
             {t:f2(R.zv[r]),num:true},
             {t:pcell(R.ph[r]),num:true}
           ]);
@@ -1456,8 +1541,8 @@ list(lv = lv, xs = xs, ns = ns, ps = ps, k = k, m = m,
         const omHtml = `<b>Omnibus (subordinate, non-gating):</b> \u03C7\u00B2 test of homogeneity, <i>\u03C7</i>\u00B2(${R.omdf[0]}) = ${f2(R.omstat[0])}, <i>p</i> ${pFmt(R.omp[0])}.`;
         const omPlain = `Omnibus (subordinate, non-gating): chi-square(${R.omdf[0]}) = ${f2(R.omstat[0])}, p ${pFmt(R.omp[0])}.`;
         document.getElementById('console').textContent = consoleText;
-        document.getElementById('apa').innerHTML = main.screenHtml
-          + `<p class="tnum" style="margin-top:14px;margin-bottom:2px">${omHtml}</p>` + sub2(t2);
+        setAPA(main.screenHtml
+          + `<p class="tnum" style="margin-top:14px;margin-bottom:2px">${omHtml}</p>` + sub2(t2));
         lastResult = {
           plain: `${main.plain}\n\n${omPlain}\n\n${t2.plain}`,
           htmlTable: main.copyHtml + paraCopy(omHtml) + '<br>' + t2.copyHtml
@@ -1537,6 +1622,9 @@ c(b0=co[1,1], b0se=co[1,2], b0t=co[1,3], b0p=co[1,4], b0l=ci[1,1], b0u=ci[1,2],
     render(R, ctx){
       const resp=ctx.cols.response, pred=ctx.cols.predictor, ci=pct(ctx.conf);
       const pc = p => p < .001 ? '< .001' : nz(p,3);
+      // Coefficients sit on different scales, so precision is per row (from that
+      // row's SE) rather than per column.
+      const D0 = seDigits(R.b0se), D1 = seDigits(R.b1se);
       const x0 = ctx.env.x0;
       let predH='', predP='';
       if(Number.isFinite(R.px)){
@@ -1547,8 +1635,8 @@ c(b0=co[1,1], b0se=co[1,2], b0t=co[1,3], b0p=co[1,4], b0l=ci[1,1], b0u=ci[1,2],
         title:`Simple Linear Regression: ${resp} predicted from ${pred}`,
         headers:[{t:'Term'},{t:'B',it:true,num:true},{t:'SE',it:true,num:true},{t:'t',it:true,num:true},{t:'p',it:true,num:true},{t:`${ci} CI`,num:true}],
         rows:[
-          [{t:'(Intercept)'},{t:fsig(R.b0),num:true},{t:fsig(R.b0se),num:true},{t:f2(R.b0t),num:true},{t:pc(R.b0p),num:true},{t:`[${fsig(R.b0l)}, ${fsig(R.b0u)}]`,num:true}],
-          [{t:pred},{t:fsig(R.b1),num:true},{t:fsig(R.b1se),num:true},{t:f2(R.b1t),num:true},{t:pc(R.b1p),num:true},{t:`[${fsig(R.b1l)}, ${fsig(R.b1u)}]`,num:true}]
+          [{t:'(Intercept)'},{t:f2(R.b0,D0),num:true},{t:f2(R.b0se,D0),num:true},{t:f2(R.b0t),num:true},{t:pc(R.b0p),num:true},{t:`[${f2(R.b0l,D0)}, ${f2(R.b0u,D0)}]`,num:true}],
+          [{t:pred},{t:f2(R.b1,D1),num:true},{t:f2(R.b1se,D1),num:true},{t:f2(R.b1t),num:true},{t:pc(R.b1p),num:true},{t:`[${f2(R.b1l,D1)}, ${f2(R.b1u,D1)}]`,num:true}]
         ],
         note:{
           html:`<i>Note.</i> Overall model: <i>F</i>(${R.df1}, ${R.df2}) = ${f2(R.f)}, <i>p</i> ${pFmt(R.fp)}. <i>R</i><sup>2</sup> = ${nz(R.r2)}, adjusted <i>R</i><sup>2</sup> = ${nz(R.adjr2)}. Pearson <i>r</i> = ${nz(R.r)}, ${ci} CI [${nz(R.rl)}, ${nz(R.ru)}] (Fisher <i>z</i>). <i>n</i> = ${R.n}.${predH}`,
@@ -1674,10 +1762,11 @@ list(term = rownames(co), est = co[,1], se = co[,2], tval = co[,3], pval = co[,4
         const R = rlistToObj(await cap.result.toJs());
         const ci = pct(env.conf), pc = p => p < .001 ? '< .001' : nz(p,3);
         const term=R.term, est=R.est, se=R.se, tv=R.tval, pv=R.pval, lo=R.lo, hi=R.hi;
-        const rows = term.map((tm,i)=>[
-          {t:String(tm)},{t:fsig(est[i]),num:true},{t:fsig(se[i]),num:true},
-          {t:f2(tv[i]),num:true},{t:pc(pv[i]),num:true},{t:`[${fsig(lo[i])}, ${fsig(hi[i])}]`,num:true}
-        ]);
+        // Precision is per row, from that row's SE: the terms are on different scales.
+        const rows = term.map((tm,i)=>{ const Di = seDigits(se[i]); return [
+          {t:String(tm)},{t:f2(est[i],Di),num:true},{t:f2(se[i],Di),num:true},
+          {t:f2(tv[i]),num:true},{t:pc(pv[i]),num:true},{t:`[${f2(lo[i],Di)}, ${f2(hi[i],Di)}]`,num:true}
+        ]; });
         const out = buildAPA({
           title:`Multiple Linear Regression: ${cols.response} on ${predNames.join(', ')}${inter.length?' (with interaction)':''}`,
           headers:[{t:'Term'},{t:'B',it:true,num:true},{t:'SE',it:true,num:true},{t:'t',it:true,num:true},{t:'p',it:true,num:true},{t:`${ci} CI`,num:true}],
@@ -1688,7 +1777,7 @@ list(term = rownames(co), est = co[,1], se = co[,2], tval = co[,3], pval = co[,4
           }
         });
         document.getElementById('console').textContent = consoleText;
-        document.getElementById('apa').innerHTML = out.screenHtml;
+        setAPA(out.screenHtml);
         lastResult = { plain: out.plain, htmlTable: out.copyHtml };
         const caps = ['Residuals vs fitted (right axis: standardized)', 'Normal Q-Q of residuals'].concat(predNames.map(n=>`Residuals vs ${n}`));
         if(R.scat && R.scat[0]===1){
@@ -1734,7 +1823,7 @@ cat(sprintf("Adjusted omega-squared (AnL) = %.4f, %.0f%% CI [%.4f, %.4f]\\n", om
 cat("(analytic noncentral-F interval on Welch df; scaled level 2C-1)\\n\\n")
 # Games-Howell pairwise comparisons, run unconditionally
 cat(sprintf("Games-Howell pairwise comparisons (%.0f%% CIs):\\n", conf*100))
-gi <- c(); gj <- c(); gd <- c(); glo <- c(); ghi <- c(); gt <- c(); gdf <- c(); gp <- c()
+gi <- c(); gj <- c(); gd <- c(); glo <- c(); ghi <- c(); gt <- c(); gdf <- c(); gp <- c(); gse <- c()
 for (i in 1:(k-1)) for (j in (i+1):k) {
   se <- sqrt(ss[i]^2/ns[i] + ss[j]^2/ns[j])
   dfij <- (ss[i]^2/ns[i] + ss[j]^2/ns[j])^2 / ((ss[i]^2/ns[i])^2/(ns[i]-1) + (ss[j]^2/ns[j])^2/(ns[j]-1))
@@ -1745,11 +1834,11 @@ for (i in 1:(k-1)) for (j in (i+1):k) {
   cat(sprintf("  %s - %s: diff = %.4f, CI [%.4f, %.4f], t = %.3f, df = %.2f, p = %.5g\\n",
       lv[i], lv[j], dd, dd-hw, dd+hw, tt, dfij, pp))
   gi <- c(gi, lv[i]); gj <- c(gj, lv[j]); gd <- c(gd, dd); glo <- c(glo, dd-hw); ghi <- c(ghi, dd+hw)
-  gt <- c(gt, tt); gdf <- c(gdf, dfij); gp <- c(gp, pp)
+  gt <- c(gt, tt); gdf <- c(gdf, dfij); gp <- c(gp, pp); gse <- c(gse, se)
 }
 list(lv = lv, ns = ns, ms = ms, ss = ss, k = k,
      f = Fv, df1 = df1, df2 = df2, p = pv, om = om, oml = om_lo, omu = om_hi,
-     gi = gi, gj = gj, gd = gd, glo = glo, ghi = ghi, gt = gt, gdf = gdf, gp = gp)`,
+     gi = gi, gj = gj, gd = gd, glo = glo, ghi = ghi, gt = gt, gdf = gdf, gp = gp, gse = gse)`,
     async run({env, cols, active, used, dropped}){
       document.getElementById('edaOut').classList.add('hidden');
       if(!installed.has('WAnova')){ setStatus('Installing WAnova (one-time download)…',{busy:true}); await webR.installPackages(['WAnova']); installed.add('WAnova'); }
@@ -1763,9 +1852,13 @@ list(lv = lv, ns = ns, ms = ms, ss = ss, k = k,
         const ciPct = Math.round((2*env.conf - 1)*100), confPct = Math.round(env.conf*100);
         const k=R.k[0], lv=R.lv;
         const pcell = p => p < .001 ? '< .001' : nz(p,3);
+        // Descriptives take their precision from the smallest SE of a group mean;
+        // the Games-Howell column from the smallest SE of a pairwise difference.
+        const Dg = seDigits(lv.map((_,i)=>R.ss[i]/Math.sqrt(R.ns[i])));
+        const Dd = seDigits(Array.from(R.gse));
         // descriptives + omnibus
         const rows = lv.map((g,i)=>[
-          {t:String(g)},{t:R.ns[i],num:true},{t:f2(R.ms[i]),num:true},{t:f2(R.ss[i]),num:true}
+          {t:String(g)},{t:R.ns[i],num:true},{t:f2(R.ms[i],Dg),num:true},{t:f2(R.ss[i],Dg),num:true}
         ]);
         const note = {
           html:`<i>Note.</i> Welch's <i>F</i>(${R.df1[0]}, ${fdf(R.df2[0])}) = ${f2(R.f[0])}, <i>p</i> ${pFmt(R.p[0])}. Adjusted \u03C9\u00B2 = ${nz(R.om[0])}, ${ciPct}% CI [${nz(R.oml[0])}, ${nz(R.omu[0])}].`,
@@ -1781,8 +1874,8 @@ list(lv = lv, ns = ns, ms = ms, ss = ss, k = k,
         for(let r=0;r<R.gd.length;r++){
           ghRows.push([
             {t:`${String(R.gi[r])} \u2212 ${String(R.gj[r])}`},
-            {t:f2(R.gd[r]),num:true},
-            {t:`[${f2(R.glo[r])}, ${f2(R.ghi[r])}]`,num:true},
+            {t:f2(R.gd[r],Dd),num:true},
+            {t:`[${f2(R.glo[r],Dd)}, ${f2(R.ghi[r],Dd)}]`,num:true},
             {t:f2(R.gt[r]),num:true},
             {t:f2(R.gdf[r]),num:true},
             {t:pcell(R.gp[r]),num:true}
@@ -1800,7 +1893,7 @@ list(lv = lv, ns = ns, ms = ms, ss = ss, k = k,
           }
         });
         document.getElementById('console').textContent = consoleText;
-        document.getElementById('apa').innerHTML = main.screenHtml + sub2(t2);
+        setAPA(main.screenHtml + sub2(t2));
         lastResult = {
           plain: `${main.plain}\n\n${t2.plain}`,
           htmlTable: main.copyHtml + '<br>' + t2.copyHtml
@@ -1955,7 +2048,7 @@ if (zw > 0)
 
 cat("\\nGroup medians:\\n")
 for (i in 1:k) cat(sprintf("  %s: n = %d, Mdn = %.4f\\n", lv[i], ns[i], mds[i]))
-list(lv = lv, ns = ns, mds = mds, k = k, m = m,
+list(lv = lv, ns = ns, mds = mds, k = k, m = m, se = se,
      gi = gi, gj = gj, est = est, lo = lo, hi = hi, zv = zv, pr = pr, ph = ph,
      omQ = omQ, omdf1 = omdf1, omp = omp, zw = zw, seedv = as.integer(seed))`,
     async run({env, cols, active, used, dropped}){
@@ -1970,8 +2063,10 @@ list(lv = lv, ns = ns, mds = mds, k = k, m = m,
         const k=R.k[0], m=R.m[0], lv=R.lv;
         const MB = multBits(multOn(env), m, ci);
         const pcell = p => p < .001 ? '< .001' : nz(p,3);
+        // Bootstrap SEs of the pairwise differences; the medians are in the same units.
+        const D = seDigits(Array.from(R.se));
         const rows = lv.map((g,i)=>[
-          {t:String(g)},{t:R.ns[i],num:true},{t:f2(R.mds[i]),num:true}
+          {t:String(g)},{t:R.ns[i],num:true},{t:f2(R.mds[i],D),num:true}
         ]);
         const note = {
           html:`<i>Note.</i> Pairwise median differences estimated by smoothed percentile bootstrap (2,000 resamples per group; seed ${R.seedv[0]}). ${m>1?MB.methHtml:'One comparison, so no multiplicity adjustment is needed.'} Mdn = median.`,
@@ -1986,8 +2081,8 @@ list(lv = lv, ns = ns, mds = mds, k = k, m = m,
         for(let r=0;r<m;r++){
           pairRows.push([
             {t:`${String(R.gi[r])} \u2212 ${String(R.gj[r])}`},
-            {t:f2(R.est[r]),num:true},
-            {t:`[${f2(R.lo[r])}, ${f2(R.hi[r])}]`,num:true},
+            {t:f2(R.est[r],D),num:true},
+            {t:`[${f2(R.lo[r],D)}, ${f2(R.hi[r],D)}]`,num:true},
             {t:Number.isFinite(Number(R.zv[r]))?f2(R.zv[r]):'\u2014',num:true},
             {t:pcell(R.ph[r]),num:true}
           ]);
@@ -2009,8 +2104,8 @@ list(lv = lv, ns = ns, mds = mds, k = k, m = m,
           ? `Omnibus (subordinate, non-gating): bootstrap median-equality test, Q = ${f2(R.omQ[0])}, df = ${R.omdf1[0]}, p ${pFmt(R.omp[0])}.`
           : `Omnibus (subordinate, non-gating): not computed - at least one group has a degenerate resampling distribution (see console).`;
         document.getElementById('console').textContent = consoleText;
-        document.getElementById('apa').innerHTML = main.screenHtml
-          + `<p class="tnum" style="margin-top:14px;margin-bottom:2px">${omHtml}</p>` + sub2(t2);
+        setAPA(main.screenHtml
+          + `<p class="tnum" style="margin-top:14px;margin-bottom:2px">${omHtml}</p>` + sub2(t2));
         lastResult = {
           plain: `${main.plain}\n\n${omPlain}\n\n${t2.plain}`,
           htmlTable: main.copyHtml + paraCopy(omHtml) + '<br>' + t2.copyHtml
@@ -2098,7 +2193,7 @@ if (inherits(res, "error")) {
           const msg = sep
             ? `The groups are perfectly (or almost perfectly) separated, so the relative-effect variances collapse to zero and the simultaneous intervals are undefined. The ordering itself is unambiguous \u2014 each group's values lie entirely above or below the others \u2014 but the MCTP cannot place a confidence interval on a boundary effect. Consider reporting the separation descriptively, or use the pairwise median-difference module for a dimensioned comparison.`
             : `The rank-based contrast could not be computed on these data. See the R console for the underlying message.`;
-          document.getElementById('apa').innerHTML = `<div class="apa-note" style="padding:6px 2px"><i>Note.</i> ${msg}</div>`;
+          setAPA(`<div class="apa-note" style="padding:6px 2px"><i>Note.</i> ${msg}</div>`);
           lastResult = { plain: 'MCTP could not be computed (see console).', htmlTable: '' };
           document.getElementById('outStep').classList.remove('hidden');
           const mn=document.getElementById('methodNote');
@@ -2151,8 +2246,8 @@ if (inherits(res, "error")) {
             plain:`Note. Simultaneous intervals and multiplicity-adjusted p-values come jointly from the multivariate t, so all ${m} intervals hold together at ${ci} and each interval agrees with its own adjusted p-value.`
           }
         });
-        document.getElementById('apa').innerHTML = main.screenHtml
-          + `<p class="tnum" style="margin-top:14px;margin-bottom:2px">${omHtml}</p>` + sub2(t2);
+        setAPA(main.screenHtml
+          + `<p class="tnum" style="margin-top:14px;margin-bottom:2px">${omHtml}</p>` + sub2(t2));
         lastResult = {
           plain: `${main.plain}\n\n${omPlain}\n\n${t2.plain}`,
           htmlTable: main.copyHtml + paraCopy(omHtml) + '<br>' + t2.copyHtml
@@ -2272,7 +2367,7 @@ list(lv = lv, ns = ns, k = k, m = m,
           rows:pairRows,
           note:{html:MB.footHtml, plain:MB.footPlain}
         });
-        document.getElementById('apa').innerHTML = main.screenHtml + sub2(t2);
+        setAPA(main.screenHtml + sub2(t2));
         lastResult = {
           plain: `${main.plain}\n\n${t2.plain}`,
           htmlTable: main.copyHtml + '<br>' + t2.copyHtml
@@ -2351,7 +2446,7 @@ list(p = ft$p.value, or = orv, orl = orl, oru = oru, is22 = is22, mc = 1 - exact
         };
         const main = buildAPA({ title:`Contingency Table and Fisher's Exact Test of ${rowName} by ${colName}`, headers, rows, note });
         document.getElementById('console').textContent = consoleText;
-        document.getElementById('apa').innerHTML = main.screenHtml;
+        setAPA(main.screenHtml);
         lastResult = { plain: main.plain, htmlTable: main.copyHtml };
         document.getElementById('outStep').classList.remove('hidden');
         const methodNote = `<b>Why this test.</b> Fisher's exact test computes the <i>p</i>-value from the exact hypergeometric distribution rather than the \u03C7\u00B2 approximation, so it remains valid when expected cell counts are small \u2014 exactly where the \u03C7\u00B2 test breaks down (min expected here: ${f2(R.minexp[0])}). For a 2\u00D72 table the reported odds ratio is the conditional maximum-likelihood estimate with an exact interval, which can differ slightly from the sample (Wald) odds ratio in the two-proportion module.`;
@@ -2418,7 +2513,7 @@ list(p = res$p.value, mc = mc, k = k, N = N, w = w,
         };
         const out = buildAPA({ title:`Exact Multinomial Goodness-of-Fit Test for ${varName}`, headers, rows, note });
         document.getElementById('console').textContent = consoleText;
-        document.getElementById('apa').innerHTML = out.screenHtml;
+        setAPA(out.screenHtml);
         lastResult = { plain: out.plain, htmlTable: out.copyHtml };
         document.getElementById('outStep').classList.remove('hidden');
         const methodNote = `<b>Why this test.</b> The exact multinomial test computes the <i>p</i>-value from the multinomial distribution itself rather than the \u03C7\u00B2 approximation, so it remains valid when expected counts are small. When the category/count combination is too large to enumerate, the tool switches to a seeded Monte Carlo version \u2014 deterministic and reproducible. Cohen's <i>w</i> is shown as a descriptive index of departure from the expected proportions; for a <i>w</i> interval, use the chi-square goodness-of-fit module.`;
@@ -2493,6 +2588,12 @@ list(a=a, b=b, cc=cc, d=d, n=n, nd=nd, pt=pt, ps=ps, D=D, DL=DL, DU=DU,
         const R = rlistToObj(await cap.result.toJs());
         const su = env.success, preName = cols.pre, postName = cols.post, ci = pct(env.conf);
         const useex = R.useex[0]===1;
+        // Wald SE of a difference between two correlated proportions, from the
+        // discordant counts: sqrt(b + c - (b - c)^2/n)/n. The Newcombe paired interval
+        // is score-based, but this is the precision of the estimate it brackets.
+        const nPairs = R.n[0], bD = R.b[0], cD = R.cc[0];
+        const Dd = seDigits(nPairs > 0
+          ? Math.sqrt(Math.max(0, bD + cD - Math.pow(bD - cD, 2)/nPairs))/nPairs : NaN);
         const headers=[{t:`${preName} \\ ${postName}`},{t:String(su),num:true},{t:`not ${su}`,num:true}];
         const rows=[
           [{t:String(su)},{t:R.a[0],num:true},{t:R.b[0],num:true}],
@@ -2505,12 +2606,12 @@ list(a=a, b=b, cc=cc, d=d, n=n, nd=nd, pt=pt, ps=ps, D=D, DL=DL, DU=DU,
           ? `Exact binomial test on the ${R.nd[0]} discordant pairs, p ${pFmt(R.pex[0])}`
           : `McNemar chi-square(1) = ${f2(R.chi2[0])}, p ${pFmt(R.pchi[0])}`;
         const note = {
-          html:`<i>Note.</i> ${testTxt}, ${sidedTxt(env.alt)}; <i>n</i> = ${R.n[0]} pairs. Difference in the proportion of ${su} (${preName} \u2212 ${postName}) = ${nzsig(R.D[0])}, ${ci} Newcombe paired CI [${nzsig(R.DL[0])}, ${nzsig(R.DU[0])}]. Paired odds ratio (b/c) = ${fci(R.orv[0])}, ${ci} exact CI [${fci(R.orl[0])}, ${fci(R.oru[0])}].`,
-          plain:`Note. ${testTxtP}, ${sidedTxt(env.alt)}; n = ${R.n[0]} pairs. Difference in the proportion of ${su} (${preName} - ${postName}) = ${nzsig(R.D[0])}, ${ci} Newcombe paired CI [${nzsig(R.DL[0])}, ${nzsig(R.DU[0])}]. Paired odds ratio (b/c) = ${fci(R.orv[0])}, ${ci} exact CI [${fci(R.orl[0])}, ${fci(R.oru[0])}].`
+          html:`<i>Note.</i> ${testTxt}, ${sidedTxt(env.alt)}; <i>n</i> = ${R.n[0]} pairs. Difference in the proportion of ${su} (${preName} \u2212 ${postName}) = ${nz(R.D[0],Dd)}, ${ci} Newcombe paired CI [${nz(R.DL[0],Dd)}, ${nz(R.DU[0],Dd)}]. Paired odds ratio (b/c) = ${fci(R.orv[0])}, ${ci} exact CI [${fci(R.orl[0])}, ${fci(R.oru[0])}].`,
+          plain:`Note. ${testTxtP}, ${sidedTxt(env.alt)}; n = ${R.n[0]} pairs. Difference in the proportion of ${su} (${preName} - ${postName}) = ${nz(R.D[0],Dd)}, ${ci} Newcombe paired CI [${nz(R.DL[0],Dd)}, ${nz(R.DU[0],Dd)}]. Paired odds ratio (b/c) = ${fci(R.orv[0])}, ${ci} exact CI [${fci(R.orl[0])}, ${fci(R.oru[0])}].`
         };
         const main = buildAPA({ title:`Paired Contingency Table and McNemar's Test of ${preName} vs ${postName} (success = ${su})`, headers, rows, note });
         document.getElementById('console').textContent = consoleText;
-        document.getElementById('apa').innerHTML = main.screenHtml;
+        setAPA(main.screenHtml);
         lastResult = { plain: main.plain, htmlTable: main.copyHtml };
         document.getElementById('outStep').classList.remove('hidden');
         const methodNote = `<b>Why these methods.</b> McNemar's test uses only the discordant pairs (b = ${R.b[0]}, c = ${R.cc[0]}) \u2014 pairs that changed \u2014 because concordant pairs carry no information about a shift. The \u03C7\u00B2 version is uncorrected, consistent with the tool's other \u03C7\u00B2 tests; when the discordant count is small (b + c &lt; 25) the tool reports the exact binomial test on the discordant pairs instead \u2014 the paired analogue of Fisher's exact. The difference CI is Newcombe's paired score method (method 10), which uses Wilson intervals for each marginal proportion with a continuity-corrected estimate of the within-pair correlation (Newcombe, 1998, <i>Statistics in Medicine</i>, 17, 2635\u20132650). The paired odds ratio b/c is the conditional ML estimate, with an exact CI from the binomial distribution of b given b + c.`;
@@ -2654,7 +2755,7 @@ function updateEdaControls(){
   document.getElementById('adjControls').classList.toggle('hidden', !(t && t.multiplicity));
 }
 function currentConf(){ return Number(document.getElementById('confSel').value); }
-const fci = x => Number.isFinite(Number(x)) ? f2(x) : (Number(x)<0 ? MINUS+'\u221E' : '\u221E');
+const fci = (x,d=2) => Number.isFinite(Number(x)) ? f2(x,d) : (Number(x)<0 ? MINUS+'\u221E' : '\u221E');
 const sidedTxt = a => a==='less' ? 'one-sided (less)' : a==='greater' ? 'one-sided (greater)' : 'two-sided';
 // Both EDA plot options redraw from the data already in R, with no re-upload.
 async function redrawEda(doneMsg){
@@ -2907,6 +3008,7 @@ function validate(){
 let lastResult = null;
 runBtn.addEventListener('click', async ()=>{
   const t = TESTS[testSel.value];
+  clearFlags();
   runBtn.disabled=true; setStatus('Running in R…',{busy:true});
   document.getElementById('testPlots').classList.add('hidden');
   const cols = currentCols();
@@ -2964,7 +3066,7 @@ runBtn.addEventListener('click', async ()=>{
 
     const out = t.render(R, ctx);
     document.getElementById('console').textContent = consoleText;
-    document.getElementById('apa').innerHTML = out.screenHtml;
+    setAPA(out.screenHtml);
     lastResult = { plain: out.plain, htmlTable: out.copyHtml };
     // any plots the module drew
     const plotsWrap = document.getElementById('testPlots'); plotsWrap.innerHTML='';
