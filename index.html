@@ -147,12 +147,13 @@
       </div>
     </div>
     <div id="confControls" style="margin-top:14px">
-      <label class="fld" for="confSel">Confidence level for intervals</label>
-      <select id="confSel" style="max-width:200px">
-        <option value="0.90">90%</option>
-        <option value="0.95" selected>95%</option>
-        <option value="0.99">99%</option>
+      <label class="fld" for="alphaSel">Significance level (&alpha;)</label>
+      <select id="alphaSel" style="max-width:200px">
+        <option value="0.10">.10</option>
+        <option value="0.05" selected>.05</option>
+        <option value="0.01">.01</option>
       </select>
+      <div class="hint" id="ciLevelReadout" style="margin-top:6px"></div>
     </div>
     <div id="adjControls" class="hidden" style="margin-top:14px">
       <label class="fld" for="bonfChk">Multiplicity adjustment</label>
@@ -166,7 +167,7 @@
         <option value="less">One-sided: less (left-tailed)</option>
         <option value="greater">One-sided: greater (right-tailed)</option>
       </select>
-      <div class="hint" style="margin-top:6px">The direction refers to the first-listed group or the test value (see the R console for R's exact statement). One-sided choices change the test's <i>p</i>-value and its own interval; effect-size intervals remain two-sided.</div>
+      <div class="hint" style="margin-top:6px">The direction refers to the first-listed group or the test value (see the R console for R's exact statement). With a one-sided alternative, every interval, effect sizes included, is reported as a two-sided interval at 1 &minus; 2&alpha; (90% at &alpha; = .05), which reaches the same decision as the one-sided test (Lakens, Scheel &amp; Isager, 2018).</div>
     </div>
     <div class="rolewarn" id="roleWarn"></div>
     <div class="run"><button class="run-btn" id="runBtn" disabled>Run analysis</button></div>
@@ -629,14 +630,16 @@ g.star.ci <- function(x.bar.1, x.bar.2, s.1, s.2, n.1, n.2, alpha) {
 }
 d <- data.frame(resp = as.numeric(resp), grp = factor(grp))
 lv <- levels(d$grp)
-tt <- t.test(resp ~ grp, data = d, conf.level = conf, alternative = alt)
+tt <- t.test(resp ~ grp, data = d, conf.level = cilev, alternative = alt)
+# A one-sided test is reported with the two-sided interval at 1 - 2*alpha.
+if (alt != "two.sided") tt$conf.int <- t.test(resp ~ grp, data = d, conf.level = cilev)$conf.int
 g1 <- d$resp[d$grp == lv[1]]; g2 <- d$resp[d$grp == lv[2]]
 m1 <- mean(g1); s1 <- sd(g1); n1 <- length(g1)
 m2 <- mean(g2); s2 <- sd(g2); n2 <- length(g2)
-g <- g.star.ci(m1, m2, s1, s2, n1, n2, 1 - conf)
+g <- g.star.ci(m1, m2, s1, s2, n1, n2, 1 - cilev)
 print(tt)
 cat(sprintf("\\nGroups compared: %s minus %s\\n", lv[1], lv[2]))
-cat(sprintf("Hedges g*s = %.3f, %.0f%% CI [%.3f, %.3f]\\n", g$g.star, conf*100, g$g.star.low, g$g.star.up))
+cat(sprintf("Hedges g*s = %.3f, %.0f%% CI [%.3f, %.3f]\\n", g$g.star, cilev*100, g$g.star.low, g$g.star.up))
 c(t=unname(tt$statistic), df=unname(tt$parameter), p=tt$p.value,
   md=m1-m2, cil=tt$conf.int[1], ciu=tt$conf.int[2],
   g=g$g.star, gl=g$g.star.low, gu=g$g.star.up,
@@ -676,9 +679,11 @@ c(t=unname(tt$statistic), df=unname(tt$parameter), p=tt$p.value,
 x <- as.numeric(pre); y <- as.numeric(post)
 dvec <- x - y
 n <- length(dvec); md <- mean(dvec); sdd <- sd(dvec)
-tt <- t.test(x, y, paired = TRUE, conf.level = conf, alternative = alt)
+tt <- t.test(x, y, paired = TRUE, conf.level = cilev, alternative = alt)
+# A one-sided test is reported with the two-sided interval at 1 - 2*alpha.
+if (alt != "two.sided") tt$conf.int <- t.test(x, y, paired = TRUE, conf.level = cilev)$conf.int
 t.obs <- unname(tt$statistic); df <- n - 1
-lim <- find_ncp_limits(t.obs, df, 1 - conf)
+lim <- find_ncp_limits(t.obs, df, 1 - cilev)
 dz <- md / sdd
 m <- df/2
 if (m >= 170) { J <- (1 - 3/(4*df - 1)) } else { J <- gamma(m)/(gamma(m-0.5)*sqrt(m)) }
@@ -687,7 +692,7 @@ gz.low <- (lim$Lower.Limit / sqrt(n)) * J
 gz.up  <- (lim$Upper.Limit  / sqrt(n)) * J
 print(tt)
 cat(sprintf("\\nMean of differences = %.3f, SD of differences = %.3f, n pairs = %d\\n", md, sdd, n))
-cat(sprintf("Hedges g_z = %.3f, %.0f%% CI [%.3f, %.3f]\\n", gz, conf*100, gz.low, gz.up))
+cat(sprintf("Hedges g_z = %.3f, %.0f%% CI [%.3f, %.3f]\\n", gz, cilev*100, gz.low, gz.up))
 c(t=t.obs, df=df, p=tt$p.value, md=md, cil=tt$conf.int[1], ciu=tt$conf.int[2],
   g=gz, gl=gz.low, gu=gz.up, sdd=sdd, n=n,
   mpre=mean(x), sdpre=sd(x), mpost=mean(y), sdpost=sd(y))`,
@@ -738,16 +743,14 @@ p <- switch(alt,
   "less"    = pt(stat, df),
   "greater" = pt(stat, df, lower.tail = FALSE),
   2*pt(abs(stat), df, lower.tail = FALSE))
-ci <- switch(alt,
-  "less"    = c(0, min(1, pst + qt(conf, df)*se)),
-  "greater" = c(max(0, pst - qt(conf, df)*se), 1),
-  pst + c(-1,1)*qt(1 - (1-conf)/2, df)*se)
+# Always two-sided: at 1 - alpha for a two-sided test, 1 - 2*alpha for a one-sided one.
+ci <- pst + c(-1,1)*qt(1 - (1-cilev)/2, df)*se
 cat("\\n\\tBrunner-Munzel Test\\n\\n")
 cat("data:  resp by grp\\n")
 cat(sprintf("alternative hypothesis: relative effect P(X<Y)+.5*P(X=Y) is %s 0.5\\n",
     switch(alt, "less" = "less than", "greater" = "greater than", "not equal to")))
 cat(sprintf("Brunner-Munzel statistic = %.4f, df = %.3f, p-value = %.5g\\n", stat, df, p))
-cat(sprintf("%.0f percent confidence interval: %.4f %.4f\\n", conf*100, ci[1], ci[2]))
+cat(sprintf("%.0f percent confidence interval: %.4f %.4f\\n", cilev*100, ci[1], ci[2]))
 cat(sprintf("sample estimate, P(X<Y)+.5*P(X=Y) = %.4f\\n", pst))
 cat(sprintf("\\nGroups: %s vs %s\\n", lv[1], lv[2]))
 c(stat=stat, df=df, p=p, phat=pst, cil=ci[1], ciu=ci[2],
@@ -853,13 +856,11 @@ p <- switch(alt,
   "greater" = min(1, max(a0, floorp)),
   "less"    = min(1, max(1 - a0, floorp)),
   max(p2, floorp))
-if (alt == "two.sided") {
-  ee <- norm_inter(dbs, c(alpha/2, 1 - alpha/2)); cil <- ee[1]; ciu <- ee[2]
-} else if (alt == "greater") {
-  cil <- norm_inter(dbs, alpha); ciu <- Inf
-} else {
-  cil <- -Inf; ciu <- norm_inter(dbs, conf)
-}
+# Always two-sided: at 1 - alpha for a two-sided test, 1 - 2*alpha for a one-sided
+# one. Each tail then holds alpha (one-sided) or alpha/2 (two-sided), so the
+# interval and the p-value above are still the same event.
+ae <- (1 - cilev)/2
+ee <- norm_inter(dbs, c(ae, 1 - ae)); cil <- ee[1]; ciu <- ee[2]
 zw <- as.numeric(is.finite(cil) && is.finite(ciu) && ciu - cil == 0)
 fmt_b <- function(v) if (is.finite(v)) sprintf("%.4f", v) else if (v > 0) "Inf" else "-Inf"
 
@@ -870,7 +871,7 @@ cat(sprintf("alternative hypothesis: true difference in medians (%s minus %s) is
     lv[1], lv[2],
     switch(alt, "less" = "less than", "greater" = "greater than", "not equal to")))
 cat(sprintf("bootstrap p-value = %.5g\\n", p))
-cat(sprintf("%.0f percent confidence interval: %s %s\\n", conf*100, fmt_b(cil), fmt_b(ciu)))
+cat(sprintf("%.0f percent confidence interval: %s %s\\n", cilev*100, fmt_b(cil), fmt_b(ciu)))
 cat(sprintf("sample estimate, difference in medians = %.4f\\n", est))
 cat(sprintf("bootstrap SE of the difference = %.4f\\n", se))
 cat("\\np is the level at which the interval would just exclude zero, so the test\\n")
@@ -927,9 +928,11 @@ c(est=est, cil=cil, ciu=ciu, p=p, se=se,
     rProgram: FIND_NCP + `
 x <- as.numeric(resp)
 n <- length(x); m <- mean(x); s <- sd(x)
-tt <- t.test(x, mu = mu0, conf.level = conf, alternative = alt)
+tt <- t.test(x, mu = mu0, conf.level = cilev, alternative = alt)
+# A one-sided test is reported with the two-sided interval at 1 - 2*alpha.
+if (alt != "two.sided") tt$conf.int <- t.test(x, mu = mu0, conf.level = cilev)$conf.int
 t.obs <- unname(tt$statistic); df <- n - 1
-lim <- find_ncp_limits(t.obs, df, 1 - conf)
+lim <- find_ncp_limits(t.obs, df, 1 - cilev)
 dd <- (m - mu0)/s
 mm <- df/2
 if (mm >= 170) { J <- (1 - 3/(4*df - 1)) } else { J <- gamma(mm)/(gamma(mm-0.5)*sqrt(mm)) }
@@ -937,7 +940,7 @@ g <- dd * J
 g.low <- (lim$Lower.Limit / sqrt(n)) * J
 g.up  <- (lim$Upper.Limit  / sqrt(n)) * J
 print(tt)
-cat(sprintf("\\nHedges g = %.3f, %.0f%% CI [%.3f, %.3f]\\n", g, conf*100, g.low, g.up))
+cat(sprintf("\\nHedges g = %.3f, %.0f%% CI [%.3f, %.3f]\\n", g, cilev*100, g.low, g.up))
 c(t=t.obs, df=df, p=tt$p.value, m=m, s=s, n=n, mu0=mu0,
   cil=tt$conf.int[1], ciu=tt$conf.int[2], g=g, gl=g.low, gu=g.up)`,
     render(R, ctx){
@@ -959,6 +962,7 @@ c(t=t.obs, df=df, p=tt$p.value, m=m, s=s, n=n, mu0=mu0,
   },
 
   chisq: {
+    scaledEffectCI: true,
     label: "Chi-square test of independence/homogeneity (+ Cramér's V)",
     dropHint: "Two categorical columns. If your data is pre-aggregated (one row per cell with a frequency), also pick the counts column.",
     methodNote: "<b>Why these statistics.</b> Cram\u00E9r's <i>V</i> uses the bias-corrected (Bergsma) adjustment. It is shown with a 90% CI: because the \u03C7\u00B2 test is one-sided, a 90% two-sided interval corresponds to the 95% test (Steiger, 2004; Lakens, 2013). Standardized residuals with |z| greater than about 2 flag the cells driving the association.",
@@ -1031,8 +1035,8 @@ list(chi2 = unname(ct$statistic), df = unname(ct$parameter), p = ct$p.value,
           htmlTable: main.copyHtml + '<br>' + t2.copyHtml
         };
         document.getElementById('outStep').classList.remove('hidden');
-        const confPct = Math.round(env.conf*100);
-        const methodNote = `<b>Cram\u00E9r's <i>V</i> and its interval.</b> Cram\u00E9r's <i>V</i> uses the bias-corrected (Bergsma) adjustment. You selected a ${confPct}% confidence level, but it is shown as a ${ciPct}% CI: because the \u03C7\u00B2 test is one-sided, a ${ciPct}% two-sided interval corresponds to the ${confPct}% test (Steiger, 2004; Lakens, 2013). Standardized residuals with |z| greater than about 2 flag the cells driving the association.`;
+        const aTxt = nz(env.siglev, 2);
+        const methodNote = `<b>Cram\u00E9r's <i>V</i> and its interval.</b> Cram\u00E9r's <i>V</i> uses the bias-corrected (Bergsma) adjustment. At &alpha; = ${aTxt} it is shown as a ${ciPct}% CI: because the \u03C7\u00B2 test is one-sided, a ${ciPct}% two-sided interval corresponds to the test at &alpha; = ${aTxt} (Steiger, 2004; Lakens, 2013). Standardized residuals with |z| greater than about 2 flag the cells driving the association.`;
         const mn=document.getElementById('methodNote'); mn.innerHTML=methodNote; mn.classList.remove('hidden');
         setStatus(`Done. ${used} rows used${dropped?`, ${dropped} dropped for missing values`:''}.`);
       } finally { await shelter.purge(); }
@@ -1040,6 +1044,7 @@ list(chi2 = unname(ct$statistic), df = unname(ct$parameter), p = ct$p.value,
   },
 
   gof: {
+    scaledEffectCI: true,
     label: "Chi-square goodness-of-fit (+ Cohen's w)",
     dropHint: "One categorical column. If pre-aggregated (one row per category with a frequency), also pick the counts column.",
     methodNote: "<b>Why this effect size.</b> Cohen's <i>w</i> summarizes how far the observed counts depart from the expected. Because the \u03C7\u00B2 test is one-sided, its interval is shown at the scaled confidence level (Steiger, 2004; Lakens, 2013).",
@@ -1095,8 +1100,8 @@ list(chi2 = unname(ct$statistic), df = unname(ct$parameter), p = ct$p.value, N =
         setAPA(out.screenHtml);
         lastResult = { plain: out.plain, htmlTable: out.copyHtml };
         document.getElementById('outStep').classList.remove('hidden');
-        const confPct = Math.round(env.conf*100);
-        const methodNote = `<b>Cohen's <i>w</i> and its interval.</b> Cohen's <i>w</i> summarizes how far the observed counts depart from the expected. You selected a ${confPct}% confidence level, but the effect-size interval is shown as a ${ciPct}% CI: because the \u03C7\u00B2 test is one-sided, a ${ciPct}% two-sided interval corresponds to the ${confPct}% test (Steiger, 2004; Lakens, 2013).`;
+        const aTxt = nz(env.siglev, 2);
+        const methodNote = `<b>Cohen's <i>w</i> and its interval.</b> Cohen's <i>w</i> summarizes how far the observed counts depart from the expected. At &alpha; = ${aTxt} the effect-size interval is shown as a ${ciPct}% CI: because the \u03C7\u00B2 test is one-sided, a ${ciPct}% two-sided interval corresponds to the test at &alpha; = ${aTxt} (Steiger, 2004; Lakens, 2013).`;
         const mn=document.getElementById('methodNote'); mn.innerHTML=methodNote; mn.classList.remove('hidden');
         setStatus(`Done. ${used} rows used${dropped?`, ${dropped} dropped for missing values`:''}.`);
       } finally { await shelter.purge(); }
@@ -1158,13 +1163,17 @@ if (ok) {
       pe <- pbinom(xx - 1, n, p0, lower.tail = FALSE)
     }
     s.z <- sum(d0[pz <= a]); s.m <- sum(d0[pm <= a]); s.e <- sum(d0[pe <= a])
+    # The reported Wilson interval is two-sided, so with a one-sided test it
+    # misses p0 when either one-sided score test rejects.
+    s.ci <- if (alt == "two.sided") s.z else
+      sum(d0[pmin(pnorm(zz), pnorm(zz, lower.tail = FALSE)) <= a])
     cat(sprintf("How bad is it here? Exact Type I error rate at n = %g, p0 = %g,\\n", n, p0))
     cat(sprintf("  against a nominal %.3f (computed by enumeration, not simulation):\\n", 1 - conf))
     cat(sprintf("    score z-test (used here) : %.4f\\n", s.z))
     cat(sprintf("    mid-p binomial           : %.4f\\n", s.m))
     cat(sprintf("    exact binomial           : %.4f\\n", s.e))
     cat(sprintf("  The Wilson interval inverts the score test, so its coverage when p = p0\\n"))
-    cat(sprintf("    is exactly 1 - %.4f = %.4f, against a nominal %.4f.\\n\\n", s.z, 1 - s.z, conf))
+    cat(sprintf("    is exactly 1 - %.4f = %.4f, against a nominal %.4f.\\n\\n", s.ci, 1 - s.ci, cilev))
   }
 }
 a.lv <- (1 - conf) * (1 + 1e-9)
@@ -1197,14 +1206,16 @@ if (r.sc == r.mp && r.sc == r.ex) {
   cat("      p-value is sitting on the threshold. Treat the finding as borderline,\\n")
   cat("      not established. Do not substitute whichever p-value you prefer. ***\\n\\n")
 }
-ptst <- prop.test(x, n, p = p0, correct = FALSE, conf.level = conf, alternative = alt)
+ptst <- prop.test(x, n, p = p0, correct = FALSE, conf.level = cilev, alternative = alt)
+# A one-sided test is reported with the two-sided Wilson interval at 1 - 2*alpha.
+if (alt != "two.sided") ptst$conf.int <- prop.test(x, n, p = p0, correct = FALSE, conf.level = cilev)$conf.int
 phat <- x / n
 zstat <- sign(phat - p0) * sqrt(unname(ptst$statistic))
 h2 <- 2*asin(sqrt(phat)) - 2*asin(sqrt(p0))
-z.c <- qnorm(1 - (1-conf)/2); se.h2 <- sqrt(1/n)
+z.c <- qnorm(1 - (1-cilev)/2); se.h2 <- sqrt(1/n)
 h2.low <- h2 - z.c*se.h2; h2.up <- h2 + z.c*se.h2
 print(ptst)
-cat(sprintf("Cohen's h2 (arcsine vs p0) = %.3f, %.0f%% CI [%.3f, %.3f]\\n", h2, conf*100, h2.low, h2.up))
+cat(sprintf("Cohen's h2 (arcsine vs p0) = %.3f, %.0f%% CI [%.3f, %.3f]\\n", h2, cilev*100, h2.low, h2.up))
 c(x=x, n=n, phat=phat, z=zstat, p=ptst$p.value, cil=ptst$conf.int[1], ciu=ptst$conf.int[2], p0=p0,
   h2=h2, h2l=h2.low, h2u=h2.up)`,
     render(R, ctx){
@@ -1368,16 +1379,16 @@ if (exists("counts")) {
   n2 <- sum(as.character(g)==gl[2]); x2 <- sum(as.character(g)==gl[2] & as.character(o)==su)
 }
 p1 <- x1/n1; p2 <- x2/n2
-zc <- qnorm(1 - (1-conf)/2)
-ptst <- prop.test(c(x1, x2), c(n1, n2), correct = FALSE, alternative = alt)
+# Every interval is two-sided: at 1 - alpha for a two-sided test, 1 - 2*alpha for a one-sided one.
+zc <- qnorm(1 - (1-cilev)/2)
+ptst <- prop.test(c(x1, x2), c(n1, n2), correct = FALSE, conf.level = cilev, alternative = alt)
 zstat <- sign(p1 - p2) * sqrt(unname(ptst$statistic))
 wilson <- function(x, n, zz = zc){ ph <- x/n; cen <- (ph + zz^2/(2*n))/(1 + zz^2/n)
   hw <- (zz/(1 + zz^2/n))*sqrt(ph*(1-ph)/n + zz^2/(4*n^2)); c(cen - hw, cen + hw) }
-zd <- if (alt == "two.sided") zc else qnorm(conf)
-w1 <- wilson(x1, n1, zd); w2 <- wilson(x2, n2, zd)
+w1 <- wilson(x1, n1, zc); w2 <- wilson(x2, n2, zc)
 diff <- p1 - p2
-dlo <- if (alt == "less")    -1 else diff - sqrt((p1 - w1[1])^2 + (w2[2] - p2)^2)
-dup <- if (alt == "greater")  1 else diff + sqrt((w1[2] - p1)^2 + (p2 - w2[1])^2)
+dlo <- diff - sqrt((p1 - w1[1])^2 + (w2[2] - p2)^2)
+dup <- diff + sqrt((w1[2] - p1)^2 + (p2 - w2[1])^2)
 h <- 2*asin(sqrt(p1)) - 2*asin(sqrt(p2)); seh <- sqrt(1/n1 + 1/n2)
 hlo <- h - zc*seh; hup <- h + zc*seh
 a <- x1; b <- n1 - x1; cc <- x2; d <- n2 - x2
@@ -1388,12 +1399,15 @@ rrlo <- exp(log(RR) - zc*selrr); rrup <- exp(log(RR) + zc*selrr)
 OR <- (a*d)/(b*cc); selor <- sqrt(1/a + 1/b + 1/cc + 1/d)
 orlo <- exp(log(OR) - zc*selor); orup <- exp(log(OR) + zc*selor)
 cat(sprintf("Comparison: %s vs %s; success = %s\\n\\n", gl[1], gl[2], su))
+# Show the Newcombe interval inside R's test printout too, in place of prop.test's
+# Wald interval, so the console carries one interval for the difference.
+ptst$conf.int <- structure(c(dlo, dup), conf.level = cilev)
 print(ptst)
 cat(sprintf("\\np1 (%s) = %.4f [x=%d, n=%d];  p2 (%s) = %.4f [x=%d, n=%d]\\n", gl[1], p1, x1, n1, gl[2], p2, x2, n2))
-cat(sprintf("Difference p1 - p2 = %.4f, %.0f%% Newcombe CI [%.4f, %.4f]\\n", diff, conf*100, dlo, dup))
-cat(sprintf("Cohen's h = %.3f, %.0f%% CI [%.3f, %.3f]\\n", h, conf*100, hlo, hup))
-cat(sprintf("Risk ratio = %.3f, %.0f%% CI [%.3f, %.3f]\\n", RR, conf*100, rrlo, rrup))
-cat(sprintf("Odds ratio = %.3f, %.0f%% CI [%.3f, %.3f]\\n", OR, conf*100, orlo, orup))
+cat(sprintf("Difference p1 - p2 = %.4f, %.0f%% Newcombe CI [%.4f, %.4f]\\n", diff, cilev*100, dlo, dup))
+cat(sprintf("Cohen's h = %.3f, %.0f%% CI [%.3f, %.3f]\\n", h, cilev*100, hlo, hup))
+cat(sprintf("Risk ratio = %.3f, %.0f%% CI [%.3f, %.3f]\\n", RR, cilev*100, rrlo, rrup))
+cat(sprintf("Odds ratio = %.3f, %.0f%% CI [%.3f, %.3f]\\n", OR, cilev*100, orlo, orup))
 if (hacorr) cat("Note: a cell count was 0; Haldane-Anscombe +0.5 correction applied to RR and OR.\\n")
 c(x1=x1,n1=n1,p1=p1, x2=x2,n2=n2,p2=p2, z=zstat, p=ptst$p.value,
   diff=diff, dlo=dlo, dup=dup, h=h, hlo=hlo, hup=hup,
@@ -1794,6 +1808,7 @@ list(term = rownames(co), est = co[,1], se = co[,2], tval = co[,3], pval = co[,4
   },
 
   welch_anova: {
+    scaledEffectCI: true,
     label: "One-way Welch ANOVA (+ Games-Howell, adjusted ω²)",
     dropHint: "Long/tidy data: a numeric outcome column and a grouping column with 3 or more levels.",
     roles: [
@@ -1849,7 +1864,7 @@ list(lv = lv, ns = ns, ms = ms, ss = ss, k = k,
         const consoleText = cap.output.filter(o=>o.type==='stdout'||o.type==='stderr').map(o=>o.data).join('\n');
         const R = rlistToObj(await cap.result.toJs());
         const grp=cols.grp, resp=cols.resp, ci=pct(env.conf);
-        const ciPct = Math.round((2*env.conf - 1)*100), confPct = Math.round(env.conf*100);
+        const ciPct = Math.round((2*env.conf - 1)*100), aTxt = nz(env.siglev, 2);
         const k=R.k[0], lv=R.lv;
         const pcell = p => p < .001 ? '< .001' : nz(p,3);
         // Descriptives take their precision from the smallest SE of a group mean;
@@ -1899,7 +1914,7 @@ list(lv = lv, ns = ns, ms = ms, ss = ss, k = k,
           htmlTable: main.copyHtml + '<br>' + t2.copyHtml
         };
         document.getElementById('outStep').classList.remove('hidden');
-        const methodNote = `<b>Why these methods.</b> Welch's <i>F</i> is the default because the classical <i>F</i> is not robust to unequal variances and pretesting them does not help (Delacre, Leys, Mora &amp; Lakens, 2019). Games-Howell is the matching post hoc under unequal variances and <i>n</i>'s (Games &amp; Howell, 1976; Sauder &amp; DeMars, 2019), and it runs unconditionally \u2014 it controls the familywise error rate on its own, so it needs no significant omnibus <i>F</i> first (Bernhardson, 1975; Hayter, 1986). Adjusted \u03C9\u00B2 (Albers &amp; Lakens, 2018) incorporates Welch's corrected df. You selected ${confPct}%, but the \u03C9\u00B2 interval is shown as a ${ciPct}% CI: because the <i>F</i> test is one-sided, a ${ciPct}% two-sided interval corresponds to the ${confPct}% test (Steiger, 2004; Lakens, 2013). The \u03C9\u00B2 interval inverts a noncentral <i>F</i> on Welch df \u2014 exact under equal variances, an accepted approximation otherwise.`;
+        const methodNote = `<b>Why these methods.</b> Welch's <i>F</i> is the default because the classical <i>F</i> is not robust to unequal variances and pretesting them does not help (Delacre, Leys, Mora &amp; Lakens, 2019). Games-Howell is the matching post hoc under unequal variances and <i>n</i>'s (Games &amp; Howell, 1976; Sauder &amp; DeMars, 2019), and it runs unconditionally \u2014 it controls the familywise error rate on its own, so it needs no significant omnibus <i>F</i> first (Bernhardson, 1975; Hayter, 1986). Adjusted \u03C9\u00B2 (Albers &amp; Lakens, 2018) incorporates Welch's corrected df. At &alpha; = ${aTxt} the \u03C9\u00B2 interval is shown as a ${ciPct}% CI: because the <i>F</i> test is one-sided, a ${ciPct}% two-sided interval corresponds to the test at &alpha; = ${aTxt} (Steiger, 2004; Lakens, 2013). The \u03C9\u00B2 interval inverts a noncentral <i>F</i> on Welch df \u2014 exact under equal variances, an accepted approximation otherwise.`;
         const mn=document.getElementById('methodNote'); mn.innerHTML=methodNote; mn.classList.remove('hidden');
         setStatus(`Done. ${used} rows used${dropped?`, ${dropped} dropped for missing values`:''}.`);
       } finally { await shelter.purge(); }
@@ -2408,8 +2423,11 @@ if (exists("counts")) {
 } else { tab <- table(rf, cf) }
 nr <- nrow(tab); nc <- ncol(tab)
 exact_ok <- 1
-ft <- tryCatch(fisher.test(tab, conf.level = conf, alternative = alt), error = function(e) NULL)
+ft <- tryCatch(fisher.test(tab, conf.level = cilev, alternative = alt), error = function(e) NULL)
 if (is.null(ft)) { exact_ok <- 0; set.seed(20260507); ft <- fisher.test(tab, simulate.p.value = TRUE, B = 1e5) }
+# A one-sided 2x2 test is reported with the two-sided odds-ratio interval at 1 - 2*alpha.
+if (exact_ok == 1 && nr == 2 && nc == 2 && alt != "two.sided")
+  ft$conf.int <- fisher.test(tab, conf.level = cilev)$conf.int
 print(ft)
 cat("\\nObserved counts:\\n"); print(tab)
 expc <- suppressWarnings(chisq.test(tab, correct = FALSE))$expected
@@ -2430,7 +2448,7 @@ list(p = ft$p.value, or = orv, orl = orl, oru = oru, is22 = is22, mc = 1 - exact
         const consoleText = cap.output.filter(o=>o.type==='stdout'||o.type==='stderr').map(o=>o.data).join('\n');
         const R = rlistToObj(await cap.result.toJs());
         const nr=R.nr[0], nc=R.nc[0], obs=R.obs, rowlab=R.rowlab, collab=R.collab;
-        const rowName=cols.row, colName=cols.col, ci=pct(env.conf);
+        const rowName=cols.row, colName=cols.col, ci=pct(env.cilev);
         const headers=[{t:rowName}].concat(collab.map(c=>({t:String(c), num:true})));
         const rows=[];
         for(let i=0;i<nr;i++){ rows.push([{t:String(rowlab[i])}].concat(collab.map((_,j)=>({t:obs[i*nc+j], num:true})))); }
@@ -2558,7 +2576,8 @@ if (nd > 0) {
   pex <- bt$p.value
 } else { z <- 0; chi2 <- 0; pchi <- 1; pex <- 1; cat("No discordant pairs: the two measures never disagree; p = 1.\\n") }
 useex <- as.numeric(nd > 0 && nd < 25)
-zc <- qnorm(1 - (1 - conf)/2)
+# Two-sided intervals at 1 - alpha, or at 1 - 2*alpha when the test is one-sided.
+zc <- qnorm(1 - (1 - cilev)/2)
 wil <- function(x, nn){ ph <- x/nn; cen <- (ph + zc^2/(2*nn))/(1 + zc^2/nn)
   hw <- (zc/(1 + zc^2/nn))*sqrt(ph*(1-ph)/nn + zc^2/(4*nn^2)); c(cen - hw, cen + hw) }
 wt <- wil(a + b, n); ws <- wil(a + cc, n)
@@ -2569,13 +2588,13 @@ if ((a+b) == 0 || (cc+d) == 0 || (a+cc) == 0 || (b+d) == 0) { rho <- 0 } else {
 DL <- D - sqrt(max(0, (pt - wt[1])^2 - 2*rho*(pt - wt[1])*(ws[2] - ps) + (ws[2] - ps)^2))
 DU <- D + sqrt(max(0, (ps - ws[1])^2 - 2*rho*(ps - ws[1])*(wt[2] - pt) + (wt[2] - pt)^2))
 if (nd > 0) {
-  th <- binom.test(b, nd, conf.level = conf)$conf.int
+  th <- binom.test(b, nd, conf.level = cilev)$conf.int
   orv <- if (cc > 0) b/cc else Inf
   orl <- th[1]/(1 - th[1]); oru <- if (th[2] < 1) th[2]/(1 - th[2]) else Inf
 } else { orv <- NaN; orl <- NaN; oru <- NaN }
-cat(sprintf("\\nDifference in proportions (first - second) = %.4f, %.0f%% Newcombe paired CI [%.4f, %.4f]\\n", D, conf*100, DL, DU))
+cat(sprintf("\\nDifference in proportions (first - second) = %.4f, %.0f%% Newcombe paired CI [%.4f, %.4f]\\n", D, cilev*100, DL, DU))
 cat(sprintf("Paired (conditional) odds ratio b/c = %s, %.0f%% exact CI [%s, %s]\\n",
-    format(orv, digits=4), conf*100, format(orl, digits=4), format(oru, digits=4)))
+    format(orv, digits=4), cilev*100, format(orl, digits=4), format(oru, digits=4)))
 list(a=a, b=b, cc=cc, d=d, n=n, nd=nd, pt=pt, ps=ps, D=D, DL=DL, DU=DU,
      chi2=chi2, z=z, pchi=pchi, pex=pex, useex=useex, orv=orv, orl=orl, oru=oru)`,
     async run({env, cols, active, used, dropped}){
@@ -2586,7 +2605,7 @@ list(a=a, b=b, cc=cc, d=d, n=n, nd=nd, pt=pt, ps=ps, D=D, DL=DL, DU=DU,
         const cap = await shelter.captureR(this.rProgram, { env });
         const consoleText = cap.output.filter(o=>o.type==='stdout'||o.type==='stderr').map(o=>o.data).join('\n');
         const R = rlistToObj(await cap.result.toJs());
-        const su = env.success, preName = cols.pre, postName = cols.post, ci = pct(env.conf);
+        const su = env.success, preName = cols.pre, postName = cols.post, ci = pct(env.cilev);
         const useex = R.useex[0]===1;
         // Wald SE of a difference between two correlated proportions, from the
         // discordant counts: sqrt(b + c - (b - c)^2/n)/n. The Newcombe paired interval
@@ -2753,8 +2772,33 @@ function updateEdaControls(){
   document.getElementById('confControls').classList.toggle('hidden', testSel.value==='eda');
   document.getElementById('altControls').classList.toggle('hidden', !(t && t.sided));
   document.getElementById('adjControls').classList.toggle('hidden', !(t && t.multiplicity));
+  updateCiReadout();
 }
-function currentConf(){ return Number(document.getElementById('confSel').value); }
+// The one user-facing setting is the significance level. The interval level
+// follows from it and the alternative: 1 - alpha for a two-sided test and
+// 1 - 2*alpha for a one-sided test, so a two-sided interval and a one-sided
+// test at alpha always reach the same decision (Lakens, Scheel & Isager, 2018).
+function currentAlpha(){ return Number(document.getElementById('alphaSel').value); }
+function currentConf(){ return +(1 - currentAlpha()).toFixed(6); }
+function currentAlt(){
+  const t = TESTS[testSel.value];
+  return (t && t.sided) ? document.getElementById('altSel').value : 'two.sided';
+}
+function ciLevelFor(alpha, alt){ return +(1 - (alt === 'two.sided' ? 1 : 2)*alpha).toFixed(6); }
+function updateCiReadout(){
+  const el = document.getElementById('ciLevelReadout'); if(!el) return;
+  const t = TESTS[testSel.value], a = currentAlpha(), alt = currentAlt();
+  const aTxt = nz(a, 2), cl = ciLevelFor(a, alt);
+  if(alt !== 'two.sided'){
+    el.innerHTML = `One-sided test at &alpha; = ${aTxt}: every interval is reported as a two-sided ${pct(cl)} CI, which reaches the same decision as the test.`;
+  } else if(t && t.scaledEffectCI){
+    el.innerHTML = `Intervals are two-sided ${pct(cl)} CIs, except the effect-size interval, which is ${pct(ciLevelFor(a,'less'))} because the omnibus test is one-sided.`;
+  } else {
+    el.innerHTML = `Intervals are reported as two-sided ${pct(cl)} CIs.`;
+  }
+}
+document.getElementById('alphaSel').addEventListener('change', updateCiReadout);
+document.getElementById('altSel').addEventListener('change', updateCiReadout);
 const fci = (x,d=2) => Number.isFinite(Number(x)) ? f2(x,d) : (Number(x)<0 ? MINUS+'\u221E' : '\u221E');
 const sidedTxt = a => a==='less' ? 'one-sided (less)' : a==='greater' ? 'one-sided (greater)' : 'two-sided';
 // Both EDA plot options redraw from the data already in R, with no re-upload.
@@ -3035,8 +3079,10 @@ runBtn.addEventListener('click', async ()=>{
                 : (pp.optional && val==='') ? NaN : Number(val);
   });
   active.forEach(r=>{ env[r.key+'_name'] = cols[r.key]; });   // column names for R-side labels
-  env.conf = currentConf();   // confidence level available to every module's R
+  env.siglev = currentAlpha();   // significance level chosen by the user
+  env.conf = currentConf();      // 1 - alpha; tests read their alpha as 1 - conf
   env.alt = t.sided ? document.getElementById('altSel').value : 'two.sided';   // alternative hypothesis (modules that declare sided)
+  env.cilev = ciLevelFor(env.siglev, env.alt);   // level of every reported interval: 1 - alpha, or 1 - 2*alpha when one-sided
   env.bonf = (t.multiplicity && document.getElementById('bonfChk').checked) ? 1 : 0;   // multiplicity switch (modules that declare multiplicity)
 
   // custom-run modules (EDA) manage their own output area
@@ -3061,7 +3107,7 @@ runBtn.addEventListener('click', async ()=>{
     const vals = await cap.result.toArray();
     const R={}; t.resultKeys.forEach((k,i)=>R[k]=vals[i]);
 
-    const ctx = { cols, levels:{}, conf: env.conf, env };
+    const ctx = { cols, levels:{}, conf: env.cilev, env };   // renders label intervals with ctx.conf
     t.roles.forEach(role=>{ if(role.kind==='group2') ctx.levels[role.key]=levelsOf(columns[cols[role.key]]).sort(); });
 
     const out = t.render(R, ctx);
