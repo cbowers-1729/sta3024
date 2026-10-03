@@ -1816,7 +1816,19 @@ list(term = rownames(co), est = co[,1], se = co[,2], tval = co[,3], pval = co[,4
       { key:'grp',  kind:'group_anova', label:'Group — 3 to 12 levels' }
     ],
     defaults: { resp:'weight', grp:'feed' },
-    rProgram: `
+    rProgram: FIND_NCP + `
+# Hedges' g*s with a noncentral-t CI, identical to the two-sample module (ind_means),
+# so each pairwise g*s here matches running that pair through the two-sample module.
+g.star.ci <- function(x.bar.1, x.bar.2, s.1, s.2, n.1, n.2, alpha) {
+  df.star <- (n.1-1)*(n.2-1)*(s.1^2+s.2^2)^2/((n.2-1)*s.1^4 + (n.1-1)*s.2^4)
+  ncp.star <- (x.bar.1 - x.bar.2)/sqrt(s.1^2/n.1 + s.2^2/n.2)
+  x <- find_ncp_limits(ncp.star, df.star, alpha)
+  d.star <- (x.bar.1 - x.bar.2)/sqrt((s.1^2+s.2^2)/2)
+  m <- df.star/2
+  if (m >= 170) { J <- (1-3/(4*df.star-9)) } else { J <- gamma(m)/(gamma(m-0.5)*sqrt(m)) }
+  scale <- sqrt(2*(n.2*s.1^2 + n.1*s.2^2)/(n.1*n.2*(s.1^2+s.2^2)))*J
+  c(g = d.star*J, lo = x$Lower.Limit*scale, hi = x$Upper.Limit*scale)
+}
 suppressMessages(library(WAnova))
 d <- data.frame(y = as.numeric(resp), g = factor(grp))
 lv <- levels(d$g); k <- length(lv)
@@ -1837,8 +1849,9 @@ om_hi <- lam_hi/(lam_hi + df1 + df2 + 1)
 cat(sprintf("Adjusted omega-squared (AnL) = %.4f, %.0f%% CI [%.4f, %.4f]\\n", om, (2*conf-1)*100, om_lo, om_hi))
 cat("(analytic noncentral-F interval on Welch df; scaled level 2C-1)\\n\\n")
 # Games-Howell pairwise comparisons, run unconditionally
-cat(sprintf("Games-Howell pairwise comparisons (%.0f%% CIs):\\n", conf*100))
+cat(sprintf("Games-Howell pairwise comparisons (%.0f%% simultaneous CIs):\\n", conf*100))
 gi <- c(); gj <- c(); gd <- c(); glo <- c(); ghi <- c(); gt <- c(); gdf <- c(); gp <- c(); gse <- c()
+eg <- c(); egl <- c(); egu <- c()
 for (i in 1:(k-1)) for (j in (i+1):k) {
   se <- sqrt(ss[i]^2/ns[i] + ss[j]^2/ns[j])
   dfij <- (ss[i]^2/ns[i] + ss[j]^2/ns[j])^2 / ((ss[i]^2/ns[i])^2/(ns[i]-1) + (ss[j]^2/ns[j])^2/(ns[j]-1))
@@ -1850,10 +1863,16 @@ for (i in 1:(k-1)) for (j in (i+1):k) {
       lv[i], lv[j], dd, dd-hw, dd+hw, tt, dfij, pp))
   gi <- c(gi, lv[i]); gj <- c(gj, lv[j]); gd <- c(gd, dd); glo <- c(glo, dd-hw); ghi <- c(ghi, dd+hw)
   gt <- c(gt, tt); gdf <- c(gdf, dfij); gp <- c(gp, pp); gse <- c(gse, se)
+  es <- g.star.ci(ms[i], ms[j], ss[i], ss[j], ns[i], ns[j], 1 - conf)
+  eg <- c(eg, es[["g"]]); egl <- c(egl, es[["lo"]]); egu <- c(egu, es[["hi"]])
 }
+# Effect sizes: unadjusted per-comparison intervals (not Games-Howell simultaneous)
+cat(sprintf("\\nHedges g*s for each comparison (%.0f%% unadjusted per-comparison CIs):\\n", conf*100))
+for (r in seq_along(eg)) cat(sprintf("  %s - %s: g*s = %.3f, CI [%.3f, %.3f]\\n", gi[r], gj[r], eg[r], egl[r], egu[r]))
 list(lv = lv, ns = ns, ms = ms, ss = ss, k = k,
      f = Fv, df1 = df1, df2 = df2, p = pv, om = om, oml = om_lo, omu = om_hi,
-     gi = gi, gj = gj, gd = gd, glo = glo, ghi = ghi, gt = gt, gdf = gdf, gp = gp, gse = gse)`,
+     gi = gi, gj = gj, gd = gd, glo = glo, ghi = ghi, gt = gt, gdf = gdf, gp = gp, gse = gse,
+     eg = eg, egl = egl, egu = egu)`,
     async run({env, cols, active, used, dropped}){
       document.getElementById('edaOut').classList.add('hidden');
       if(!installed.has('WAnova')){ setStatus('Installing WAnova (one-time download)…',{busy:true}); await webR.installPackages(['WAnova']); installed.add('WAnova'); }
@@ -1893,18 +1912,21 @@ list(lv = lv, ns = ns, ms = ms, ss = ss, k = k,
             {t:`[${f2(R.glo[r],Dd)}, ${f2(R.ghi[r],Dd)}]`,num:true},
             {t:f2(R.gt[r]),num:true},
             {t:f2(R.gdf[r]),num:true},
-            {t:pcell(R.gp[r]),num:true}
+            {t:pcell(R.gp[r]),num:true},
+            {t:f2(R.eg[r]),num:true},
+            {t:`[${f2(R.egl[r])}, ${f2(R.egu[r])}]`,num:true}
           ]);
         }
         const t2 = buildAPA({
           num:2,
-          title:`Games-Howell Pairwise Comparisons of ${resp} by ${grp} (${ci} CIs)`,
-          headers:[{t:'Comparison'},{t:'<i>M</i> diff.',p:'M diff.',num:true},{t:`${ci} CI`,num:true},
-                   {t:'t',it:true,num:true},{t:'df',it:true,num:true},{t:'p',it:true,num:true}],
+          title:`Games-Howell Pairwise Comparisons and Effect Sizes for ${resp} by ${grp}`,
+          headers:[{t:'Comparison'},{t:'<i>M</i> diff.',p:'M diff.',num:true},{t:`${ci} simultaneous CI`,num:true},
+                   {t:'t',it:true,num:true},{t:'df',it:true,num:true},{t:'p',it:true,num:true},
+                   {t:'<i>g*</i><sub>s</sub>',p:'g*s',num:true},{t:`${ci} CI`,num:true}],
           rows:ghRows,
           note:{
-            html:`<i>Note.</i> Games-Howell controls the familywise error rate across all ${R.gd.length} comparisons, so the intervals and the <i>p</i>-values carry the same adjustment.`,
-            plain:`Note. Games-Howell controls the familywise error rate across all ${R.gd.length} comparisons, so the intervals and the p-values carry the same adjustment.`
+            html:`<i>Note.</i> Games-Howell controls the familywise error rate across all ${R.gd.length} comparisons; the mean-difference intervals are ${ci} simultaneous intervals and carry the same adjustment as the <i>p</i>-values. Hedges' <i>g*</i><sub>s</sub> uses the non-pooled standardizer; its intervals are unadjusted ${ci} per-comparison intervals, so a <i>g*</i><sub>s</sub> interval can exclude zero when the Games-Howell <i>p</i>-value is not significant.`,
+            plain:`Note. Games-Howell controls the familywise error rate across all ${R.gd.length} comparisons; the mean-difference intervals are ${ci} simultaneous intervals and carry the same adjustment as the p-values. Hedges' g*s uses the non-pooled standardizer; its intervals are unadjusted ${ci} per-comparison intervals, so a g*s interval can exclude zero when the Games-Howell p-value is not significant.`
           }
         });
         document.getElementById('console').textContent = consoleText;
@@ -1914,7 +1936,7 @@ list(lv = lv, ns = ns, ms = ms, ss = ss, k = k,
           htmlTable: main.copyHtml + '<br>' + t2.copyHtml
         };
         document.getElementById('outStep').classList.remove('hidden');
-        const methodNote = `<b>Why these methods.</b> Welch's <i>F</i> is the default because the classical <i>F</i> is not robust to unequal variances and pretesting them does not help (Delacre, Leys, Mora &amp; Lakens, 2019). Games-Howell is the matching post hoc under unequal variances and <i>n</i>'s (Games &amp; Howell, 1976; Sauder &amp; DeMars, 2019), and it runs unconditionally \u2014 it controls the familywise error rate on its own, so it needs no significant omnibus <i>F</i> first (Bernhardson, 1975; Hayter, 1986). Adjusted \u03C9\u00B2 (Albers &amp; Lakens, 2018) incorporates Welch's corrected df. At &alpha; = ${aTxt} the \u03C9\u00B2 interval is shown as a ${ciPct}% CI: because the <i>F</i> test is one-sided, a ${ciPct}% two-sided interval corresponds to the test at &alpha; = ${aTxt} (Steiger, 2004; Lakens, 2013). The \u03C9\u00B2 interval inverts a noncentral <i>F</i> on Welch df \u2014 exact under equal variances, an accepted approximation otherwise.`;
+        const methodNote = `<b>Why these methods.</b> Welch's <i>F</i> is the default because the classical <i>F</i> is not robust to unequal variances and pretesting them does not help (Delacre, Leys, Mora &amp; Lakens, 2019). Games-Howell is the matching post hoc under unequal variances and <i>n</i>'s (Games &amp; Howell, 1976; Sauder &amp; DeMars, 2019), and it runs unconditionally \u2014 it controls the familywise error rate on its own, so it needs no significant omnibus <i>F</i> first (Bernhardson, 1975; Hayter, 1986). Adjusted \u03C9\u00B2 (Albers &amp; Lakens, 2018) incorporates Welch's corrected df. At &alpha; = ${aTxt} the \u03C9\u00B2 interval is shown as a ${ciPct}% CI: because the <i>F</i> test is one-sided, a ${ciPct}% two-sided interval corresponds to the test at &alpha; = ${aTxt} (Steiger, 2004; Lakens, 2013). The \u03C9\u00B2 interval inverts a noncentral <i>F</i> on Welch df \u2014 exact under equal variances, an accepted approximation otherwise. Each comparison also reports Hedges' <i>g*</i><sub>s</sub>, computed exactly as in the two-sample module (non-pooled standardizer, small-sample correction, noncentral-<i>t</i> interval; Delacre et al., 2021), so it matches running that pair on its own. Its interval is deliberately unadjusted: it estimates the size of that one difference rather than supporting a joint decision, and the familywise decision is already made by the Games-Howell <i>p</i>-values and simultaneous intervals. Read the <i>g*</i><sub>s</sub> interval as a per-comparison estimate; an interval that excludes zero next to a nonsignificant Games-Howell <i>p</i>-value is the multiplicity adjustment made visible, not a contradiction.`;
         const mn=document.getElementById('methodNote'); mn.innerHTML=methodNote; mn.classList.remove('hidden');
         setStatus(`Done. ${used} rows used${dropped?`, ${dropped} dropped for missing values`:''}.`);
       } finally { await shelter.purge(); }
