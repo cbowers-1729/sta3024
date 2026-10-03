@@ -95,6 +95,9 @@
   @media(max-width:640px){.edaopts{grid-template-columns:1fr}}
   .chk{display:inline-flex; align-items:center; gap:8px; font-size:14px; cursor:pointer}
   .chk input{width:auto; margin:0}
+  .multipick{border:1px solid var(--rule); border-radius:6px; background:#fff; padding:8px 10px;
+             max-height:190px; overflow:auto; display:flex; flex-direction:column; gap:6px}
+  .multipick .chk input:focus-visible{outline:2px solid var(--accent); outline-offset:2px}
   #edaStats{margin-top:4px}
   .copy{font:inherit; font-size:12px; color:var(--accent); background:none; border:1px solid var(--accent);
         border-radius:5px; padding:3px 10px; cursor:pointer}
@@ -470,35 +473,82 @@ function quantile7(s, p){ const n=s.length; if(!n) return NaN; const h=(n-1)*p, 
 function summ(vals){ const v=vals.slice().sort((a,b)=>a-b); const n=v.length; const mean=v.reduce((a,b)=>a+b,0)/n;
   const sd = n>1 ? Math.sqrt(v.reduce((a,b)=>a+(b-mean)*(b-mean),0)/(n-1)) : NaN;
   return {n, mean, sd, sem:sd/Math.sqrt(n), min:v[0], q1:quantile7(v,.25), mdn:quantile7(v,.5), q3:quantile7(v,.75), max:v[n-1]}; }
-function edaStatsBuild(vals, groups, vname, gname){
-  const rows=[];
-  if(groups){ const L=[...new Set(groups)].sort(); L.forEach(g=>rows.push([g, summ(vals.filter((_,i)=>groups[i]===g))])); }
-  else rows.push([vname, summ(vals)]);
-  const labHead = groups ? gname : 'Variable';
+// EDA model (built by edaGather): one entry per checked variable, each with its
+// own nonmissing values, so a missing value in one variable never removes a row
+// from another variable's summary. Rows with a missing group are dropped for all.
+function edaGather(cols){
+  const vnames = cols.variable || [];
+  const gcol = cols.group || null, scol = cols.second || null;
+  const N = columns[vnames[0]].length;
+  const gRaw = gcol ? columns[gcol] : null;
+  const okNum = v => !isNA(v) && Number.isFinite(Number(v));
+  const keep = []; let droppedG = 0;
+  for(let i=0;i<N;i++){ if(gRaw && isNA(gRaw[i])){ droppedG++; continue; } keep.push(i); }
+  let missing = 0;
+  const vars = vnames.map(name=>{
+    const col = columns[name], vals = [], groups = [];
+    keep.forEach(i=>{
+      if(okNum(col[i])){ vals.push(Number(col[i])); if(gRaw) groups.push(String(gRaw[i]).trim()); }
+      else missing++;
+    });
+    return {name, vals, groups};
+  }).filter(v=>v.vals.length);
+  // Scatterplot pairs: complete cases on the first checked variable and the partner.
+  const scatter = {x:[], y:[], g:[]};
+  if(scol && vars.length){
+    const cx = columns[vars[0].name], cy = columns[scol];
+    keep.forEach(i=>{ if(okNum(cx[i]) && okNum(cy[i])){
+      scatter.x.push(Number(cx[i])); scatter.y.push(Number(cy[i]));
+      if(gRaw) scatter.g.push(String(gRaw[i]).trim()); } });
+  }
+  const levels = gRaw ? [...new Set(keep.map(i=>String(gRaw[i]).trim()))].sort() : null;
+  return {vars, gname:gcol, hasG:!!gcol, levels, sname:scol, scatter, used:keep.length, droppedG, missing};
+}
+const listJoin = a => a.length<3 ? a.join(' and ') : a.slice(0,-1).join(', ')+', and '+a[a.length-1];
+// Descriptive table, variables across rows. One variable with a group keeps the
+// original layout (group levels as rows). Two or more variables, or no group, add
+// a Variable column whose name appears on the first row of its block only.
+// Each variable takes its precision from the smallest SEM in its own block, since
+// the variables can be on different scales.
+function edaStatsBuild(M){
+  const {vars, gname, hasG, levels} = M;
+  const multi = vars.length > 1, showVar = multi || !hasG;
+  const blocks = vars.map(v=>{
+    const rows = hasG
+      ? levels.map(g=>[g, v.vals.filter((_,i)=>v.groups[i]===g)]).filter(([,x])=>x.length).map(([g,x])=>[g, summ(x)])
+      : [[null, summ(v.vals)]];
+    return {name:v.name, rows, D:seDigits(rows.map(([,st])=>st.sem))};
+  });
+  const labHeads = showVar ? ['Variable'].concat(hasG?[gname]:[]) : [gname];
+  const nLab = labHeads.length;
   const statHead = ['n','M','SD','SEM','Min','Q1','Mdn','Q3','Max'];
-  // Every column here is in the outcome's own units, so one precision governs the
-  // whole numeric block, taken from the smallest standard error of the mean.
-  const D = seDigits(rows.map(([,s])=>s.sem));
-  const cells = s => [String(s.n), f2(s.mean,D), f2(s.sd,D), f2(s.sem,D), f2(s.min,D), f2(s.q1,D), f2(s.mdn,D), f2(s.q3,D), f2(s.max,D)];
+  const cells = (st,D) => [String(st.n), f2(st.mean,D), f2(st.sd,D), f2(st.sem,D), f2(st.min,D), f2(st.q1,D), f2(st.mdn,D), f2(st.q3,D), f2(st.max,D)];
+  // flat rows: {lab:[...], num:[...], blockStart}
+  const rows = [];
+  blocks.forEach((b,bi)=>b.rows.forEach(([g,st],ri)=>{
+    const lab = showVar ? [ri===0 ? b.name : ''].concat(hasG?[g]:[]) : [g];
+    rows.push({lab, num:cells(st,b.D), blockStart: ri===0 && bi>0});
+  }));
 
-  const head = `<th>${labHead}</th>`+statHead
+  const head = labHeads.map(h=>`<th>${h}</th>`).join('')+statHead
     .map(h=>`<th class="num"><span style="font-style:italic">${h}</span></th>`).join('');
-  const body = rows.map(([lab,s])=>`<tr><td>${lab}</td>`+
-    cells(s).map(x=>`<td class="num">${x}</td>`).join('')+`</tr>`).join('');
+  const body = rows.map(r=>{ const pad = r.blockStart ? ' style="padding-top:10px"' : '';
+    return `<tr>`+r.lab.map(x=>`<td${pad}>${x}</td>`).join('')+
+      r.num.map(x=>`<td class="num"${pad}>${x}</td>`).join('')+`</tr>`; }).join('');
   const screenHtml = `<table class="apa-tbl"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
 
-  const title = groups ? `Descriptive Statistics for ${vname} by ${gname}`
-                       : `Descriptive Statistics for ${vname}`;
-  const noteHtml  = `<i>Note.</i> <i>SEM</i> = standard error of the mean; <i>Q</i>1 and <i>Q</i>3 = first and third quartiles; <i>Mdn</i> = median. Quartiles use R's type-7 definition.`;
-  const notePlain = `Note. SEM = standard error of the mean; Q1 and Q3 = first and third quartiles; Mdn = median. Quartiles use R's type-7 definition.`;
+  const title = `Descriptive Statistics for ${listJoin(vars.map(v=>v.name))}${hasG?` by ${gname}`:''}`;
+  const missTxt = (multi && M.missing) ? ' Missing values were excluded separately for each variable, so n can differ across variables.' : '';
+  const noteHtml  = `<i>Note.</i> <i>SEM</i> = standard error of the mean; <i>Q</i>1 and <i>Q</i>3 = first and third quartiles; <i>Mdn</i> = median. Quartiles use R's type-7 definition.${missTxt.replace(' n ',' <i>n</i> ')}`;
+  const notePlain = `Note. SEM = standard error of the mean; Q1 and Q3 = first and third quartiles; Mdn = median. Quartiles use R's type-7 definition.${missTxt}`;
 
   const C="padding:3px 10px;font-family:'Times New Roman',serif;font-size:11pt;";
   const TL="border-top:1.5px solid #000;", BH="border-bottom:1px solid #000;", BB="border-bottom:1.5px solid #000;";
-  const cHead = [labHead, ...statHead].map((h,i)=>
-    `<td style="${C}${TL}${BH}text-align:${i===0?'left':'right'};${i?'font-style:italic;':''}">${h}</td>`).join('');
-  const cBody = rows.map(([lab,s],ri)=>{ const last=ri===rows.length-1;
-    return `<tr>`+[lab,...cells(s)].map((c,i)=>
-      `<td style="${C}${last?BB:''}text-align:${i===0?'left':'right'};">${c}</td>`).join('')+`</tr>`; }).join('');
+  const cHead = [...labHeads, ...statHead].map((h,i)=>
+    `<td style="${C}${TL}${BH}text-align:${i<nLab?'left':'right'};${i>=nLab?'font-style:italic;':''}">${h}</td>`).join('');
+  const cBody = rows.map((r,ri)=>{ const last=ri===rows.length-1, gap=r.blockStart?'padding-top:8pt;':'';
+    return `<tr>`+[...r.lab,...r.num].map((c,i)=>
+      `<td style="${C}${gap}${last?BB:''}text-align:${i<nLab?'left':'right'};">${c}</td>`).join('')+`</tr>`; }).join('');
   const copyHtml =
     `<p style="font-style:italic;font-family:'Times New Roman',serif;font-size:11pt;margin:0;">Table 1</p>`+
     `<p style="font-style:italic;font-family:'Times New Roman',serif;font-size:11pt;margin:0 0 6pt;">${title}</p>`+
@@ -506,49 +556,59 @@ function edaStatsBuild(vals, groups, vname, gname){
     `<p style="font-family:'Times New Roman',serif;font-size:11pt;margin:6pt 0 0;">${noteHtml}</p>`;
 
   const plain = `Table 1\n${title}\n\n`+
-    [labHead,...statHead].join('\t')+'\n'+
-    rows.map(([lab,s])=>[lab,...cells(s)].join('\t')).join('\n')+'\n\n'+notePlain;
+    [...labHeads,...statHead].join('\t')+'\n'+
+    rows.map(r=>[...r.lab,...r.num].join('\t')).join('\n')+'\n\n'+notePlain;
 
   return {screenHtml, copyHtml, plain};
 }
-function edaPlotCode(active, cols, pal, showEcdf){
-  const has = k => active.some(r=>r.key===k);
-  const hasG=has('group'), hasS=has('second');
-  const q = s => String(s).replace(/'/g,'');
-  const vn=q(cols.variable), gn=hasG?q(cols.group):'', sn=hasS?q(cols.second):'';
+// Plots are drawn once per checked variable by one R function, so labels come
+// from R character vectors (lnames, gname) rather than being pasted into code.
+function edaPlotCode(M, pal, showEcdf){
+  const {vars, hasG} = M, multi = vars.length > 1;
+  const hasS = !!M.sname && M.scatter.x.length > 0;
   const ACC=`'${pal.accent}'`;
   const CATS='c('+pal.cats.map(c=>`'${c}'`).join(',')+')';
   const TH="theme_minimal(base_size=13)";
-  const lines=["library(ggplot2)"];
-  lines.push(hasG ? "df<-data.frame(v=as.numeric(variable), g=factor(group))" : "df<-data.frame(v=as.numeric(variable))");
-  if(hasS) lines.push("df$s<-as.numeric(second)");
-  // Axis labels as percentages. signif() keeps a useful digit when the bars are small.
-  lines.push("pctlab<-function(x) ifelse(is.na(x),'',paste0(signif(100*x,3),'%'))");
-  // Facet strip labels carry each group's n: rescaling to proportion hides sample
-  // size, and the reader needs it to judge how much to trust the smaller panel.
+  const env = { lv:[], lk:[], lnames: vars.map(v=>v.name), gname: hasG ? M.gname : '' };
+  if(hasG) env.lg = [];
+  vars.forEach((v,k)=>{ v.vals.forEach((x,i)=>{ env.lv.push(x); env.lk.push(k+1); if(hasG) env.lg.push(v.groups[i]); }); });
+  if(hasS){ env.sx = M.scatter.x; env.sy = M.scatter.y; env.sname = M.sname; if(hasG) env.sg = M.scatter.g; }
+
+  const L=["library(ggplot2)"];
+  L.push("pctlab<-function(x) ifelse(is.na(x),'',paste0(signif(100*x,3),'%'))");
+  L.push(hasG ? "D<-data.frame(v=as.numeric(lv),k=as.integer(lk),g=factor(lg))" : "D<-data.frame(v=as.numeric(lv),k=as.integer(lk))");
+  L.push(`ttl<-function(s,vn) ${multi ? "paste0(s,': ',vn)" : "s"}`);
+  const body=[];
+  // Facet strip labels carry each group's n (see the histogram note in the
+  // single-variable version: proportions hide sample size).
   if(hasG){
-    lines.push("nn<-table(df$g)");
-    lines.push("df$gl<-factor(df$g,levels=names(nn),labels=paste0(names(nn),' (n = ',format(as.integer(nn),big.mark=',',trim=TRUE),')'))");
+    body.push("nn<-table(df$g)");
+    body.push("df$gl<-factor(df$g,levels=names(nn),labels=paste0(names(nn),' (n = ',format(as.integer(nn),big.mark=',',trim=TRUE),')'))");
   }
-  // y = density*width is count/sum(count) computed inside stat_bin, so the
-  // proportion is per group. Do not use count/sum(count): that sums the layer.
-  lines.push(hasG
-    ? `print(ggplot(df,aes(x=v,fill=g))+geom_histogram(aes(y=after_stat(density*width)),bins=30,color='white')+scale_fill_manual(values=${CATS})+scale_y_continuous(labels=pctlab)+${TH}+labs(x='${vn}',y='Relative frequency',title='Histogram')+facet_wrap(~gl)+guides(fill='none'))`
-    : `print(ggplot(df,aes(x=v))+geom_histogram(aes(y=after_stat(density*width)),bins=30,fill=${ACC},color='white')+scale_y_continuous(labels=pctlab)+${TH}+labs(x='${vn}',y='Relative frequency',title='Histogram'))`);
-  if(showEcdf) lines.push(hasG
-    ? `print(ggplot(df,aes(x=v,color=gl))+stat_ecdf(linewidth=.9)+scale_color_manual(values=${CATS})+scale_y_continuous(labels=pctlab)+${TH}+labs(x='${vn}',y='Cumulative proportion',color='${gn}',title='Empirical CDF'))`
-    : `print(ggplot(df,aes(x=v))+stat_ecdf(linewidth=.9,color=${ACC})+scale_y_continuous(labels=pctlab)+${TH}+labs(x='${vn}',y='Cumulative proportion',title='Empirical CDF'))`);
-  lines.push(hasG
-    ? `print(ggplot(df,aes(x=g,y=v,fill=g))+geom_boxplot(alpha=.7)+scale_fill_manual(values=${CATS})+${TH}+labs(x='${gn}',y='${vn}',title='Boxplot by group')+guides(fill='none'))`
-    : `print(ggplot(df,aes(y=v))+geom_boxplot(fill=${ACC},alpha=.7)+${TH}+labs(y='${vn}',title='Boxplot')+theme(axis.text.x=element_blank(),axis.ticks.x=element_blank()))`);
-  lines.push(hasG
-    ? `print(ggplot(df,aes(sample=v,color=g))+stat_qq(alpha=.6)+stat_qq_line()+scale_color_manual(values=${CATS})+${TH}+labs(title='Normal Q-Q',x='Theoretical',y='Sample')+facet_wrap(~g)+guides(color='none'))`
-    : `print(ggplot(df,aes(sample=v))+stat_qq(alpha=.6)+stat_qq_line(color=${ACC})+${TH}+labs(title='Normal Q-Q',x='Theoretical',y='Sample'))`);
-  if(hasS) lines.push(hasG
-    ? `print(ggplot(df,aes(x=v,y=s,color=g))+geom_point(alpha=.6)+scale_color_manual(values=${CATS})+${TH}+labs(x='${vn}',y='${sn}',color='${gn}',title='Scatterplot'))`
-    : `print(ggplot(df,aes(x=v,y=s))+geom_point(alpha=.6,color=${ACC})+${TH}+labs(x='${vn}',y='${sn}',title='Scatterplot'))`);
-  const captions=['Histogram'].concat(showEcdf?['Empirical CDF']:[],['Boxplot','Normal Q-Q'],hasS?['Scatterplot']:[]);
-  return { code: lines.join("; "), captions };
+  // y = density*width is count/sum(count) within each group's panel.
+  body.push(hasG
+    ? `print(ggplot(df,aes(x=v,fill=g))+geom_histogram(aes(y=after_stat(density*width)),bins=30,color='white')+scale_fill_manual(values=${CATS})+scale_y_continuous(labels=pctlab)+${TH}+labs(x=vn,y='Relative frequency',title=ttl('Histogram',vn))+facet_wrap(~gl)+guides(fill='none'))`
+    : `print(ggplot(df,aes(x=v))+geom_histogram(aes(y=after_stat(density*width)),bins=30,fill=${ACC},color='white')+scale_y_continuous(labels=pctlab)+${TH}+labs(x=vn,y='Relative frequency',title=ttl('Histogram',vn)))`);
+  if(showEcdf) body.push(hasG
+    ? `print(ggplot(df,aes(x=v,color=gl))+stat_ecdf(linewidth=.9)+scale_color_manual(values=${CATS})+scale_y_continuous(labels=pctlab)+${TH}+labs(x=vn,y='Cumulative proportion',color=gname,title=ttl('Empirical CDF',vn)))`
+    : `print(ggplot(df,aes(x=v))+stat_ecdf(linewidth=.9,color=${ACC})+scale_y_continuous(labels=pctlab)+${TH}+labs(x=vn,y='Cumulative proportion',title=ttl('Empirical CDF',vn)))`);
+  body.push(hasG
+    ? `print(ggplot(df,aes(x=g,y=v,fill=g))+geom_boxplot(alpha=.7)+scale_fill_manual(values=${CATS})+${TH}+labs(x=gname,y=vn,title=ttl('Boxplot by group',vn))+guides(fill='none'))`
+    : `print(ggplot(df,aes(y=v))+geom_boxplot(fill=${ACC},alpha=.7)+${TH}+labs(y=vn,title=ttl('Boxplot',vn))+theme(axis.text.x=element_blank(),axis.ticks.x=element_blank()))`);
+  body.push(hasG
+    ? `print(ggplot(df,aes(sample=v,color=g))+stat_qq(alpha=.6)+stat_qq_line()+scale_color_manual(values=${CATS})+${TH}+labs(title=ttl('Normal Q-Q',vn),x='Theoretical',y='Sample')+facet_wrap(~g)+guides(color='none'))`
+    : `print(ggplot(df,aes(sample=v))+stat_qq(alpha=.6)+stat_qq_line(color=${ACC})+${TH}+labs(title=ttl('Normal Q-Q',vn),x='Theoretical',y='Sample'))`);
+  L.push("one<-function(df,vn){ "+body.join("; ")+"; invisible(NULL) }");
+  L.push("for(i in seq_along(lnames)) one(D[D$k==i,,drop=FALSE], lnames[i])");
+  if(hasS){
+    L.push(hasG ? "S<-data.frame(x=as.numeric(sx),y=as.numeric(sy),g=factor(sg))" : "S<-data.frame(x=as.numeric(sx),y=as.numeric(sy))");
+    L.push(hasG
+      ? `print(ggplot(S,aes(x=x,y=y,color=g))+geom_point(alpha=.6)+scale_color_manual(values=${CATS})+${TH}+labs(x=lnames[1],y=sname,color=gname,title='Scatterplot'))`
+      : `print(ggplot(S,aes(x=x,y=y))+geom_point(alpha=.6,color=${ACC})+${TH}+labs(x=lnames[1],y=sname,title='Scatterplot'))`);
+  }
+  const per = ['Histogram'].concat(showEcdf?['Empirical CDF']:[],['Boxplot','Normal Q-Q']);
+  const captions = vars.flatMap(v=>per.map(c=> multi ? `${c}: ${v.name}` : c)).concat(hasS?['Scatterplot']:[]);
+  return { code: L.join("; "), captions, env };
 }
 
 const PALETTES = {
@@ -561,16 +621,16 @@ const PALETTES = {
 };
 
 let lastEda = null, lastEdaStats = null;
-async function drawEDA(env, cols, active){
+async function drawEDA(M){
   if(!ggReady){ setStatus('Installing the plotting library (one-time download)…',{busy:true}); await webR.installPackages(['ggplot2']); ggReady=true; }
   setStatus('Drawing plots in R…',{busy:true});
   const pal = PALETTES[document.getElementById('edaPalette').value] || PALETTES.forest;
-  const {code, captions} = edaPlotCode(active, cols, pal, document.getElementById('edaEcdf').checked);
+  const {code, captions, env} = edaPlotCode(M, pal, document.getElementById('edaEcdf').checked);
   const shelter = await new webR.Shelter();
   try{
     const cap = await shelter.captureR(code, { env, captureGraphics:{ width:820, height:460 } });
     clearFlags();
-    const st = edaStatsBuild(env.variable, env.group||null, cols.variable, cols.group);
+    const st = edaStatsBuild(M);
     document.getElementById('edaStats').innerHTML = st.screenHtml + flagHtml();
     clearFlags();
     lastEdaStats = { htmlTable: st.copyHtml, plain: st.plain };
@@ -588,19 +648,22 @@ const TESTS = {
 
   eda: {
     label: "Exploratory data analysis (summary + plots)",
-    dropHint: "Any dataset: choose a numeric variable, and optionally a grouping column and/or a second numeric variable.",
+    dropHint: "Any dataset: check one or more numeric variables, and optionally choose a grouping column and/or a scatterplot variable.",
     runLabel: "Explore data",
     roles: [
-      { key:'variable', kind:'numeric',   label:'Variable — numeric' },
-      { key:'group',    kind:'group_any', label:'Group (optional) — splits stats and plots by group', optional:true },
-      { key:'second',   kind:'numeric',   label:'Second variable (optional) — enables a scatterplot', optional:true }
+      { key:'variable', kind:'numeric_multi', label:'Variables (numeric): check one or more' },
+      { key:'group',    kind:'group_any', label:'Group (optional): splits stats and plots by group', optional:true },
+      { key:'second',   kind:'numeric',   label:'Scatterplot variable (optional): plotted against the first checked variable', optional:true }
     ],
     defaults: {},
-    async run({env, cols, active, used, dropped}){
+    selfGather: true,
+    async run({cols}){
       document.getElementById('outStep').classList.add('hidden');
-      lastEda = {env, cols, active};
-      await drawEDA(env, cols, active);
-      setStatus(`Done. ${used} rows used${dropped?`, ${dropped} dropped for missing values`:''}.`);
+      const M = edaGather(cols);
+      if(!M.vars.length) throw new Error('No nonmissing values in the checked variables.');
+      lastEda = M;
+      await drawEDA(M);
+      setStatus(`Done. ${M.used} rows used${M.droppedG?`, ${M.droppedG} dropped for a missing group`:''}${M.missing?`; ${M.missing} missing value${M.missing===1?'':'s'} excluded variable by variable`:''}.`);
     }
   },
 
@@ -2827,7 +2890,7 @@ const sidedTxt = a => a==='less' ? 'one-sided (less)' : a==='greater' ? 'one-sid
 async function redrawEda(doneMsg){
   if(testSel.value!=='eda' || !lastEda) return;
   runBtn.disabled=true;
-  try{ await drawEDA(lastEda.env, lastEda.cols, lastEda.active); setStatus(doneMsg); }
+  try{ await drawEDA(lastEda); setStatus(doneMsg); }
   catch(e){ setStatus('R error: '+e.message,{err:true}); }
   finally{ runBtn.disabled=false; }
 }
@@ -2886,6 +2949,14 @@ function eligible(kind){
 function renderRoles(){
   const t = TESTS[testSel.value];
   let html = t.roles.map(role=>{
+    if(role.kind==='numeric_multi'){
+      // Checkbox list (easier than a multiple <select> on touch screens). The first
+      // eligible column starts checked; order follows the CSV's column order.
+      const boxes = eligible('numeric').map((h,i)=>
+        `<label class="chk"><input type="checkbox" data-role-multi="${role.key}" value="${String(h).replace(/"/g,'&quot;')}"${i===0?' checked':''}> ${h}</label>`).join('');
+      return `<div><label class="fld" id="role_${role.key}_lbl">${role.label}</label>
+              <div class="multipick" role="group" aria-labelledby="role_${role.key}_lbl">${boxes||'(no eligible column)'}</div></div>`;
+    }
     const opts = eligible(role.kind);
     let list = opts.map(h=>`<option>${h}</option>`).join('');
     if(role.optional) list = `<option value="">— none —</option>` + list;
@@ -2904,6 +2975,10 @@ function renderRoles(){
   rolesContainer.innerHTML = html;
   // sensible defaults + listeners
   t.roles.forEach(role=>{
+    if(role.kind==='numeric_multi'){
+      rolesContainer.querySelectorAll(`[data-role-multi="${role.key}"]`).forEach(cb=>cb.addEventListener('change', validate));
+      return;
+    }
     const sel = rolesContainer.querySelector(`[data-role="${role.key}"]`);
     const def = t.defaults[role.key];
     if(def && [...sel.options].some(o=>o.value===def)) sel.value=def;
@@ -3037,16 +3112,31 @@ function updateLevelHint(){
 }
 
 function currentCols(){
-  const map={}; rolesContainer.querySelectorAll('[data-role]').forEach(s=>map[s.dataset.role]=s.value); return map;
+  const map={}; rolesContainer.querySelectorAll('[data-role]').forEach(s=>map[s.dataset.role]=s.value);
+  // Multi-column roles come back as an array of checked column names, in column order.
+  rolesContainer.querySelectorAll('[data-role-multi]').forEach(cb=>{
+    const k=cb.dataset.roleMulti; if(!map[k]) map[k]=[]; if(cb.checked) map[k].push(cb.value); });
+  return map;
 }
 function validate(){
   const t = TESTS[testSel.value];
   if(!t || !headers.length){ runBtn.disabled=true; return; }
   const cols = currentCols();
   let ok = webRReady, msg='';
-  for(const role of t.roles){ if(!role.optional && !cols[role.key]) ok=false; }
-  const chosen = t.roles.map(r=>cols[r.key]).filter(v=>v);
+  const filled = v => Array.isArray(v) ? v.length>0 : !!v;
+  for(const role of t.roles){ if(!role.optional && !filled(cols[role.key])){ ok=false; if(role.kind==='numeric_multi') msg='Check at least one variable.'; } }
+  const chosen = t.roles.filter(r=>r.kind!=='numeric_multi').map(r=>cols[r.key]).filter(v=>v);
   if(ok && new Set(chosen).size !== chosen.length){ ok=false; msg='Each role needs a different column.'; }
+  // A multi-variable role may share a column with the scatterplot role, but the
+  // grouping column cannot also be summarized, and the scatterplot variable must
+  // differ from the first checked variable it is plotted against.
+  const multiVals = t.roles.filter(r=>r.kind==='numeric_multi').flatMap(r=>cols[r.key]||[]);
+  if(ok && multiVals.length){
+    for(const role of t.roles){
+      if(role.kind.startsWith('group') && cols[role.key] && multiVals.includes(cols[role.key])){ ok=false; msg='The group column cannot also be one of the checked variables.'; }
+    }
+    if(ok && cols.second && cols.second===multiVals[0]){ ok=false; msg='The scatterplot variable must differ from the first checked variable.'; }
+  }
   for(const role of t.roles){
     if(role.kind==='group2' && cols[role.key] && levelsOf(columns[cols[role.key]]).length!==2){ ok=false; msg='The group column must have exactly 2 levels.'; }
   }
@@ -3078,6 +3168,14 @@ runBtn.addEventListener('click', async ()=>{
   runBtn.disabled=true; setStatus('Running in R…',{busy:true});
   document.getElementById('testPlots').classList.add('hidden');
   const cols = currentCols();
+  // Modules that build their own data (EDA, with its per-variable missing values)
+  // skip the shared listwise gather below.
+  if(t.selfGather){
+    try{ await t.run({cols}); }
+    catch(e){ setStatus('R error: '+e.message,{err:true}); }
+    finally{ runBtn.disabled=false; }
+    return;
+  }
   const active = t.roles.filter(r=>cols[r.key]);   // skip optional roles left empty
 
   // gather + listwise NA drop across the active role columns
