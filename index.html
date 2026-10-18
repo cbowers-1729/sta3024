@@ -1181,7 +1181,8 @@ list(chi2 = unname(ct$statistic), df = unname(ct$parameter), p = ct$p.value, N =
       { key:'counts',  kind:'numeric', label:'Counts (optional) — frequency per category, for pre-aggregated data', optional:true }
     ],
     params: [
-      { key:'success', type:'level', fromRole:'outcome', default:'last', label:'Success category — the level counted as a success' },
+      { key:'success', type:'level', fromRole:'outcome', required:true, shortLabel:'success category',
+        label:'Success category: the level counted as a success' },
       { key:'p0', type:'number', default:0.5, label:'Hypothesized proportion (p\u2080)' }
     ],
     defaults: { outcome:'Gender', counts:'Count' },
@@ -1558,7 +1559,8 @@ c(x1=x1,n1=n1,p1=p1, x2=x2,n2=n2,p2=p2, z=zstat, p=ptst$p.value,
       { key:'counts',  kind:'numeric',   label:'Counts (optional) — frequency per cell, for pre-aggregated data', optional:true }
     ],
     params: [
-      { key:'success', type:'level', fromRole:'outcome', default:'last', label:'Success category — the outcome level counted as a success' }
+      { key:'success', type:'level', fromRole:'outcome', required:true, shortLabel:'success category',
+        label:'Success category: the outcome level counted as a success' }
     ],
     defaults: {},
     rProgram: `
@@ -2687,7 +2689,8 @@ list(p = res$p.value, mc = mc, k = k, N = N, w = w,
       { key:'counts', kind:'numeric', label:'Counts (optional) — frequency per cell, for pre-aggregated data', optional:true }
     ],
     params: [
-      { key:'success', type:'level', fromRole:'pre', default:'last', label:'Success category — the level counted as a success in both columns' }
+      { key:'success', type:'level', fromRole:'pre', required:true, shortLabel:'success category',
+        label:'Success category: the level counted as a success in both columns' }
     ],
     defaults: {},
     rProgram: `
