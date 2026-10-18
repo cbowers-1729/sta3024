@@ -1417,22 +1417,40 @@ c(ok=ok, n=n, med=med, q1=qq[1], q3=qq[2], iqr=qq[2]-qq[1], mn=x[1], mx=x[n],
 
   twoprop: {
     label: "Two-sample - Independent proportions (Newcombe CI + Cohen's h, RR, OR)",
-    dropHint: "A 2-level outcome column and a 2-level grouping column. If pre-aggregated, also pick the counts column.",
-    methodNote: "<b>Effect sizes and intervals.</b> The difference in proportions uses the Newcombe hybrid-score interval (Method 10), which keeps good coverage at any <i>n</i>, unlike the Wald interval (Newcombe, 1998). Cohen's <i>h</i> is the arcsine difference 2\u00B7arcsin\u221A<i>p&#770;</i>\u2081 \u2212 2\u00B7arcsin\u221A<i>p&#770;</i>\u2082. The risk ratio and odds ratio use Wald log intervals (the standard log-transform method, e.g. <i>epitools</i>' <code>method='wald'</code>). If any 2\u00D72 cell count is zero, a Haldane\u2013Anscombe correction (+0.5 to each cell) is applied to RR and OR so they stay defined (Haldane, 1956; Anscombe, 1956). All proportion effect sizes stay at the full confidence level.",
+    dropHint: "A 2-level outcome column and a 2-level grouping column. If pre-aggregated, also pick the counts column. Then choose the success category (column 1 of the table) and the first group (row 1, p₁).",
+    methodNote: "<b>Setup.</b> The two choices below the column pickers define the 2×2 table: the success category is column 1 and the first group is row 1, so <i>p&#770;</i>₁ is the proportion of successes in the first group and <i>p&#770;</i>₂ is the proportion in the other group. Swapping the groups reverses the sign of the difference, <i>z</i>, and <i>h</i> and inverts RR and OR; the <i>p</i>-value is unchanged. Choosing the other outcome level as the success category analyzes the complementary proportions: the difference, <i>z</i>, and <i>h</i> reverse sign, OR is inverted, and RR becomes the risk ratio for the other outcome. <b>Effect sizes and intervals.</b> The difference in proportions uses the Newcombe hybrid-score interval (Method 10), which keeps good coverage at any <i>n</i>, unlike the Wald interval (Newcombe, 1998). Cohen's <i>h</i> is the arcsine difference 2\u00B7arcsin\u221A<i>p&#770;</i>\u2081 \u2212 2\u00B7arcsin\u221A<i>p&#770;</i>\u2082. The risk ratio and odds ratio use Wald log intervals (the standard log-transform method, e.g. <i>epitools</i>' <code>method='wald'</code>). If any 2\u00D72 cell count is zero, a Haldane\u2013Anscombe correction (+0.5 to each cell) is applied to RR and OR so they stay defined (Haldane, 1956; Anscombe, 1956). All proportion effect sizes stay at the full confidence level.",
     roles: [
       { key:'outcome', kind:'group2', label:'Outcome — categorical, exactly 2 levels' },
       { key:'group',   kind:'group2', label:'Group — categorical, exactly 2 levels' },
       { key:'counts',  kind:'numeric', label:'Counts (optional) — frequency per cell, for pre-aggregated data', optional:true }
     ],
     params: [
-      { key:'success', type:'level', fromRole:'outcome', default:'last', label:'Success category — the outcome level counted as a success' }
+      { key:'success', type:'level', fromRole:'outcome', required:true, shortLabel:'success category',
+        label:'Success category: the outcome level counted as a success (column 1 of the table)' },
+      { key:'group1', type:'level', fromRole:'group', required:true, shortLabel:'first group (p₁)',
+        label:'First group (<i>p</i><sub>1</sub>): the group in row 1; the other group is <i>p</i><sub>2</sub>' }
     ],
+    liveHint(cols, pv){
+      const o = cols.outcome, g = cols.group;
+      if(!o || !g || o===g || !columns[g]) return '';
+      if(!pv.success || !pv.group1)
+        return 'Choose the success category and the first group. Together they decide which proportion is <i>p</i><sub>1</sub> and which is <i>p</i><sub>2</sub>, and so the sign of the difference.';
+      const g2 = levelsOf(columns[g]).filter(x=>x!==pv.group1)[0] || '';
+      return `<i>p</i><sub>1</sub> = proportion of ${o} = ${pv.success} in ${pv.group1} (row 1). `
+           + `<i>p</i><sub>2</sub> = proportion of ${o} = ${pv.success} in ${g2} (row 2). `
+           + `The difference reported is <i>p</i><sub>1</sub> − <i>p</i><sub>2</sub>.`;
+    },
     defaults: {},
     sided: true,
     resultKeys: ['x1','n1','p1','x2','n2','p2','z','p','diff','dlo','dup','h','hlo','hup','RR','rrlo','rrup','OR','orlo','orup','hac'],
     rProgram: `
 o <- factor(outcome); g <- factor(group)
-gl <- levels(g); su <- success
+su <- success
+if (!(group1 %in% levels(g))) stop("The first group must be one of the levels of the group column.")
+if (!(su %in% levels(o))) stop("The success category must be one of the levels of the outcome column.")
+# The first group chosen by the user is group 1 (row 1); the other level is group 2.
+gl <- c(group1, setdiff(levels(g), group1))
+fl <- setdiff(levels(o), su)[1]
 if (exists("counts")) {
   w <- as.numeric(counts)
   n1 <- sum(w[as.character(g)==gl[1]]); x1 <- sum(w[as.character(g)==gl[1] & as.character(o)==su])
@@ -1462,6 +1480,12 @@ rrlo <- exp(log(RR) - zc*selrr); rrup <- exp(log(RR) + zc*selrr)
 OR <- (a*d)/(b*cc); selor <- sqrt(1/a + 1/b + 1/cc + 1/d)
 orlo <- exp(log(OR) - zc*selor); orup <- exp(log(OR) + zc*selor)
 cat(sprintf("Comparison: %s vs %s; success = %s\\n\\n", gl[1], gl[2], su))
+# The 2x2 table behind the test: row 1 = first group, column 1 = success.
+tabm <- rbind(c(x1, n1 - x1), c(x2, n2 - x2)); dimnames(tabm) <- list(gl[1:2], c(su, fl))
+tabm <- rbind(tabm, Total = colSums(tabm)); tabm <- cbind(tabm, Total = rowSums(tabm))
+cat("Observed counts (row 1 = first group, column 1 = success):\\n"); print(tabm)
+cat("\\nRow proportions:\\n"); print(round(tabm[, 1:2] / tabm[, 3], 4))
+cat("\\n")
 # Show the Newcombe interval inside R's test printout too, in place of prop.test's
 # Wald interval, so the console carries one interval for the difference.
 ptst$conf.int <- structure(c(dlo, dup), conf.level = cilev)
@@ -1477,12 +1501,33 @@ c(x1=x1,n1=n1,p1=p1, x2=x2,n2=n2,p2=p2, z=zstat, p=ptst$p.value,
   RR=RR, rrlo=rrlo, rrup=rrup, OR=OR, orlo=orlo, orup=orup, hac=as.numeric(hacorr))`,
     render(R, ctx){
       const outcome=ctx.cols.outcome, group=ctx.cols.group, success=ctx.env.success;
-      const [g1,g2]=ctx.levels.group, ci=pct(ctx.conf);
+      // Group order follows the user's choice of first group (the R program applies the same rule).
+      const g1=ctx.env.group1, g2=ctx.levels.group.filter(l=>l!==g1)[0], ci=pct(ctx.conf);
+      const failLvl=ctx.levels.outcome.filter(l=>l!==success)[0];
       const hacH = R.hac===1 ? ` A Haldane\u2013Anscombe correction (+0.5 per cell) was applied to RR and OR because a cell count was zero (Haldane, 1956; Anscombe, 1956).` : '';
       const Dp = seDigits(seProp(R.p1,R.n1), seProp(R.p2,R.n2));          // the p-hat column
       const Dd = seDigits(seDiffProp(R.p1,R.n1,R.p2,R.n2));                // the difference
       const hacP = R.hac===1 ? ` A Haldane-Anscombe correction (+0.5 per cell) was applied to RR and OR because a cell count was zero (Haldane, 1956; Anscombe, 1956).` : '';
-      return buildAPA({
+      // Table 2: the 2x2 table behind the test, counts with row proportions in parentheses.
+      // Row 1 = first group, column 1 = success; the Total row's success proportion is the
+      // pooled proportion used for the standard error under the null.
+      const nT=R.n1+R.n2, xT=R.x1+R.x2, pT=xT/nT;
+      const cc=(x,n)=>({t:`${x} (${nz(x/n,Dp)})`,num:true});
+      const t2 = buildAPA({
+        num:2,
+        title:`Counts and Row Proportions of ${outcome} by ${group}`,
+        headers:[{t:group},{t:success,num:true},{t:failLvl,num:true},{t:'Total',num:true}],
+        rows:[
+          [{t:g1},cc(R.x1,R.n1),cc(R.n1-R.x1,R.n1),{t:R.n1,num:true}],
+          [{t:g2},cc(R.x2,R.n2),cc(R.n2-R.x2,R.n2),{t:R.n2,num:true}],
+          [{t:'Total'},cc(xT,nT),cc(nT-xT,nT),{t:nT,num:true}]
+        ],
+        note:{
+          html:`<i>Note.</i> Cell entries are counts with row proportions in parentheses. Column 1 is the success category (${success}) and row 1 is the first group, <i>p</i><sub>1</sub> (${g1}). The success proportion in the Total row is the pooled proportion used in the standard error for the <i>z</i> test.`,
+          plain:`Note. Cell entries are counts with row proportions in parentheses. Column 1 is the success category (${success}) and row 1 is the first group, p1 (${g1}). The success proportion in the Total row is the pooled proportion used in the standard error for the z test.`
+        }
+      });
+      const t1 = buildAPA({
         title:`Two-Proportion Test for ${outcome} (success = ${success}) by ${group}`,
         headers:[{t:group},{t:'x',it:true,num:true},{t:'n',it:true,num:true},{t:'p\u0302',num:true}],
         rows:[
@@ -1494,6 +1539,12 @@ c(x1=x1,n1=n1,p1=p1, x2=x2,n2=n2,p2=p2, z=zstat, p=ptst$p.value,
           plain:`Note. z = ${f2(R.z)}, p ${pFmt(R.p)}, ${sidedTxt(ctx.env.alt)}. Difference (p-hat[${g1}] - p-hat[${g2}]) = ${nz(R.diff,Dd)}, ${ci} Newcombe CI [${nz(R.dlo,Dd)}, ${nz(R.dup,Dd)}]. Cohen's h = ${f2(R.h)}, ${ci} CI [${f2(R.hlo)}, ${f2(R.hup)}]. Risk ratio = ${f2(R.RR)}, ${ci} CI [${f2(R.rrlo)}, ${f2(R.rrup)}]. Odds ratio = ${f2(R.OR)}, ${ci} CI [${f2(R.orlo)}, ${f2(R.orup)}].${hacP}`
         }
       });
+      // Both tables travel together on screen and with the Copy table button.
+      return {
+        screenHtml: t1.screenHtml + sub2(t2),
+        copyHtml: t1.copyHtml + '<br>' + t2.copyHtml,
+        plain: `${t1.plain}\n\n${t2.plain}`
+      };
     }
   },
 
@@ -2972,6 +3023,7 @@ function renderRoles(){
      <input type="${ty}"${step} data-param="${pp.key}" id="param_${pp.key}" value="${pp.default}"></div>`;
   }).join('');
   if(t.levelsPreview) html += `<div id="levelHint" class="hint" style="grid-column:1/-1; margin-top:2px"></div>`;
+  if(t.liveHint) html += `<div id="liveHint" class="hint" style="grid-column:1/-1; margin-top:2px"></div>`;
   rolesContainer.innerHTML = html;
   // sensible defaults + listeners
   t.roles.forEach(role=>{
@@ -3092,8 +3144,12 @@ function updateLevelParams(){
     const colName = src ? src.value : '';
     const lv = (colName && columns[colName]) ? levelsOf(columns[colName]).slice().sort() : [];
     const prev = sel.value;
-    sel.innerHTML = lv.map(l=>`<option>${l}</option>`).join('');
+    // A required level parameter starts blank and keeps Run disabled until the
+    // user chooses a level, so the choice is made on purpose, not by default.
+    const blank = pp.required ? '<option value="">Choose...</option>' : '';
+    sel.innerHTML = blank + lv.map(l=>`<option>${l}</option>`).join('');
     if(lv.includes(prev)) sel.value = prev;
+    else if(pp.required) sel.value = '';
     else if(pp.default==='last' && lv.length) sel.value = lv[lv.length-1];
     else if(pp.default==='first' && lv.length) sel.value = lv[0];
   });
@@ -3139,6 +3195,23 @@ function validate(){
   }
   for(const role of t.roles){
     if(role.kind==='group2' && cols[role.key] && levelsOf(columns[cols[role.key]]).length!==2){ ok=false; msg='The group column must have exactly 2 levels.'; }
+  }
+  // Required level parameters (e.g. the success category) have no default: Run stays
+  // disabled until each one is chosen.
+  if(t.params){
+    const missing = t.params.filter(pp=>{
+      if(pp.type!=='level' || !pp.required) return false;
+      const el = rolesContainer.querySelector(`[data-param="${pp.key}"]`);
+      return el && el.value==='';
+    }).map(pp=>pp.shortLabel || pp.key);
+    if(missing.length){ ok=false; if(!msg) msg = 'Choose the ' + missing.join(' and the ') + ' before running.'; }
+  }
+  // Optional live sentence under the role pickers (modules declare liveHint).
+  const lh = document.getElementById('liveHint');
+  if(lh){
+    const pv = {};
+    rolesContainer.querySelectorAll('[data-param]').forEach(e=>pv[e.dataset.param]=e.value);
+    lh.innerHTML = t.liveHint ? t.liveHint(cols, pv) : '';
   }
   if(t.params) for(const pp of t.params){
     if((pp.type||'number')!=='number') continue;
