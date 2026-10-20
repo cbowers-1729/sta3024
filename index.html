@@ -1028,7 +1028,7 @@ c(t=t.obs, df=df, p=tt$p.value, m=m, s=s, n=n, mu0=mu0,
     scaledEffectCI: true,
     label: "Chi-square test of independence/homogeneity (+ Cramér's V)",
     dropHint: "Two categorical columns. If your data is pre-aggregated (one row per cell with a frequency), also pick the counts column.",
-    methodNote: "<b>Why these statistics.</b> Cram\u00E9r's <i>V</i> uses the bias-corrected (Bergsma) adjustment. It is shown with a 90% CI: because the \u03C7\u00B2 test is one-sided, a 90% two-sided interval corresponds to the 95% test (Steiger, 2004; Lakens, 2013). Standardized residuals with |z| greater than about 2 flag the cells driving the association.",
+    methodNote: "<b>Why these statistics.</b> Cram\u00E9r's <i>V</i> uses the bias-corrected (Bergsma) adjustment. It is shown with a 90% CI: because the \u03C7\u00B2 test is one-sided, a 90% two-sided interval corresponds to the 95% test (Steiger, 2004; Lakens, 2013). Standardized residuals are compared with a Bonferroni cutoff, \u03A6<sup>\u22121</sup>(1 \u2212 \u03B1 / (2<i>m</i>)), where <i>m</i> is the number of distinct comparisons: 1 for a 2 \u00D7 2 table, the larger dimension when one dimension is 2 and the other is more than 2, and the number of cells otherwise.",
     roles: [
       { key:'row',    kind:'categorical', label:'Row variable — categorical' },
       { key:'col',    kind:'categorical', label:'Column variable — categorical' },
@@ -1045,12 +1045,19 @@ if (exists("counts")) {
 ct <- chisq.test(tab, correct = FALSE)
 cv <- cramers_v(tab, adjust = TRUE, ci = 2*conf - 1, alternative = "two.sided")
 std <- ct$stdres
+# Bonferroni cutoff for the standardized residuals, m = number of distinct comparisons:
+# 2 x 2 -> 1 (all four |z| are identical); one dimension 2 and the other larger -> the larger
+# dimension (the two rows or columns are mirror images); otherwise m = rc.
+nr0 <- nrow(tab); nc0 <- ncol(tab)
+mcmp <- if (nr0 == 2 && nc0 == 2) 1 else if (min(nr0, nc0) == 2) max(nr0, nc0) else nr0 * nc0
+cutz <- qnorm(1 - (1 - conf) / (2 * mcmp))
 print(ct)
 cat("\\nObserved counts:\\n"); print(tab)
 cat("\\nExpected counts (each should be >= 5):\\n"); print(round(ct$expected, 2))
 cat("\\nRow percentages (% of row total):\\n"); print(round(prop.table(tab, 1) * 100, 1))
+cat(sprintf("\\nBonferroni cutoff for the standardized residuals: |z| > %.2f (m = %d, alpha = %.3f)\\n", cutz, as.integer(mcmp), 1 - conf))
 list(chi2 = unname(ct$statistic), df = unname(ct$parameter), p = ct$p.value,
-     N = sum(tab), V = cv[[1]], cil = cv$CI_low, ciu = cv$CI_high,
+     N = sum(tab), V = cv[[1]], cil = cv$CI_low, ciu = cv$CI_high, cut = cutz, m = mcmp,
      minexp = min(ct$expected), nr = nrow(tab), nc = ncol(tab),
      rowlab = rownames(tab), collab = colnames(tab),
      obs = as.vector(t(tab)), std = as.vector(t(std)))`,
@@ -1087,8 +1094,8 @@ list(chi2 = unname(ct$statistic), df = unname(ct$parameter), p = ct$p.value,
           headers:[{t:rowName}].concat(collab.map(c=>({t:String(c), num:true}))),
           rows:residRows,
           note:{
-            html:`<i>Note.</i> Residuals with |<i>z</i>| greater than about 2 flag the cells driving the association.`,
-            plain:`Note. Residuals with |z| greater than about 2 flag the cells driving the association.`
+            html:`<i>Note.</i> Cutoff = &Phi;<sup>&minus;1</sup>(1 &minus; ${nz(env.siglev,2)} / (2<i>m</i>)) = ${f2(R.cut[0])}, <i>m</i> = ${R.m[0]}. Residuals with |<i>z</i>| greater than the cutoff flag the cells driving the association.`,
+            plain:`Note. Cutoff = qnorm(1 - ${nz(env.siglev,2)} / (2m)) = ${f2(R.cut[0])}, m = ${R.m[0]}. Residuals with |z| greater than the cutoff flag the cells driving the association.`
           }
         });
         document.getElementById('console').textContent = consoleText;
@@ -1099,7 +1106,7 @@ list(chi2 = unname(ct$statistic), df = unname(ct$parameter), p = ct$p.value,
         };
         document.getElementById('outStep').classList.remove('hidden');
         const aTxt = nz(env.siglev, 2);
-        const methodNote = `<b>Cram\u00E9r's <i>V</i> and its interval.</b> Cram\u00E9r's <i>V</i> uses the bias-corrected (Bergsma) adjustment. At &alpha; = ${aTxt} it is shown as a ${ciPct}% CI: because the \u03C7\u00B2 test is one-sided, a ${ciPct}% two-sided interval corresponds to the test at &alpha; = ${aTxt} (Steiger, 2004; Lakens, 2013). Standardized residuals with |z| greater than about 2 flag the cells driving the association.`;
+        const methodNote = `<b>Cram\u00E9r's <i>V</i> and its interval.</b> Cram\u00E9r's <i>V</i> uses the bias-corrected (Bergsma) adjustment. At &alpha; = ${aTxt} it is shown as a ${ciPct}% CI: because the \u03C7\u00B2 test is one-sided, a ${ciPct}% two-sided interval corresponds to the test at &alpha; = ${aTxt} (Steiger, 2004; Lakens, 2013). Standardized residuals are compared with a Bonferroni cutoff, \u03A6<sup>\u22121</sup>(1 \u2212 \u03B1 / (2<i>m</i>)), where <i>m</i> is the number of distinct comparisons: 1 for a 2 \u00D7 2 table, the larger dimension when one dimension is 2 and the other is more than 2, and the number of cells otherwise.`;
         const mn=document.getElementById('methodNote'); mn.innerHTML=methodNote; mn.classList.remove('hidden');
         setStatus(`Done. ${used} rows used${dropped?`, ${dropped} dropped for missing values`:''}.`);
       } finally { await shelter.purge(); }
