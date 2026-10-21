@@ -163,6 +163,13 @@
       <label class="chk"><input type="checkbox" id="bonfChk"> Bonferroni: adjusted <i>p</i>-values and simultaneous CIs</label>
       <div class="hint" style="margin-top:6px">Unchecked (default): Holm-adjusted <i>p</i>-values with unadjusted per-comparison intervals. Checked: a single-step Bonferroni adjustment applied to both, so all intervals hold jointly at the confidence level above.</div>
     </div>
+    <div id="pctControls" class="hidden" style="margin-top:14px">
+      <label class="fld">Percentages under each count</label>
+      <label class="chk"><input type="checkbox" id="pctRow" checked> Row %</label>
+      <label class="chk"><input type="checkbox" id="pctCol"> Column %</label>
+      <label class="chk"><input type="checkbox" id="pctAll"> Overall %</label>
+      <div class="hint" style="margin-top:6px">Each percentage appears in parentheses under the count, in the order row, column, overall. The table also gets a Total row and column.</div>
+    </div>
     <div id="altControls" class="hidden" style="margin-top:14px">
       <label class="fld" for="altSel">Alternative hypothesis</label>
       <select id="altSel" style="max-width:280px">
@@ -367,6 +374,56 @@ const fdf = (x)=>{ const v=Number(x); if(!Number.isFinite(v)) return String(x);
   return Math.abs(v-Math.round(v)) < 1e-8 ? String(Math.round(v)) : v.toFixed(2); };
 const pct = (c)=> Math.round(Number(c)*100)+'%';
 const pFmt = p => p < .001 ? '< .001' : '= ' + nz(p,3);
+
+/* ===== percentages under counts =====
+   One decimal by default (3 of 1,000 is 0.3%). Only a percentage that one decimal would round to
+   0.0% (or 100.0%) gets more decimals, until two significant digits show (0.028%, 99.972%), so a
+   rare event is never reported as zero and a near-complete one never as 100. */
+function fmtP(x, n){
+  if(!(n > 0)) return '';
+  const v = 100 * x / n, m = Math.min(v, 100 - v);
+  let d = 1;
+  // Only when one decimal would show 0.0 (or 100.0) for a value that is not exactly 0 (or 100).
+  if(m > 1e-9 && (Number(v.toFixed(1)) === 0 || Number(v.toFixed(1)) === 100)) d = 1 - Math.floor(Math.log10(m));
+  return v.toFixed(d);
+}
+function pctOpts(){
+  const g = id => { const e = document.getElementById(id); return !!(e && e.checked); };
+  return { row:g('pctRow'), col:g('pctCol'), all:g('pctAll') };
+}
+// A cell with the count and, below it, the checked percentages in parentheses.
+function pctCell(v, rTot, cTot, N, pc){
+  const parts = [];
+  if(pc.row) parts.push(fmtP(v, rTot));
+  if(pc.col) parts.push(fmtP(v, cTot));
+  if(pc.all) parts.push(fmtP(v, N));
+  return { t:[String(v)].concat(parts.map(q=>`(${q}%)`)).join('<br>'),
+           p:[String(v)].concat(parts.map(q=>`(${q}%)`)).join(' '), num:true };
+}
+// Contingency-table body with a Total column and a Total row. obs is row-major.
+function crossRows(obs, nr, nc, rowlab, pc){
+  const rt = Array(nr).fill(0), ct = Array(nc).fill(0); let N = 0;
+  for(let i=0;i<nr;i++) for(let j=0;j<nc;j++){ const v = Number(obs[i*nc+j]); rt[i]+=v; ct[j]+=v; N+=v; }
+  const rows = [];
+  for(let i=0;i<nr;i++){
+    const r = [{t:String(rowlab[i])}];
+    for(let j=0;j<nc;j++) r.push(pctCell(Number(obs[i*nc+j]), rt[i], ct[j], N, pc));
+    r.push(pctCell(rt[i], rt[i], N, N, pc));
+    rows.push(r);
+  }
+  const tr = [{t:'Total'}];
+  for(let j=0;j<nc;j++) tr.push(pctCell(ct[j], N, ct[j], N, pc));
+  tr.push(pctCell(N, N, N, N, pc));
+  rows.push(tr);
+  return rows;
+}
+function pctNote(pc){
+  const nm = []; if(pc.row) nm.push('row'); if(pc.col) nm.push('column'); if(pc.all) nm.push('overall');
+  if(!nm.length) return '';
+  if(nm.length === 1) return ` Cell entries are counts with ${nm[0]} percentages in parentheses.`;
+  const last = nm.pop();
+  return ` Cell entries are counts; the percentages in parentheses below each count are, in order, ${nm.join(', ')}${nm.length>1?',':''} and ${last} percentages.`;
+}
 
 /* ============================ APA table builder ============================ */
 // headers: [{t, it, num}]   rows: [[{t, num}, ...]]   note: {html, plain}
@@ -1025,6 +1082,7 @@ c(t=t.obs, df=df, p=tt$p.value, m=m, s=s, n=n, mu0=mu0,
   },
 
   chisq: {
+    pctControls: true,
     scaledEffectCI: true,
     label: "Chi-square test of independence/homogeneity (+ Cramér's V)",
     dropHint: "Two categorical columns. If your data is pre-aggregated (one row per cell with a frequency), also pick the counts column.",
@@ -1072,9 +1130,9 @@ list(chi2 = unname(ct$statistic), df = unname(ct$parameter), p = ct$p.value,
         const R = rlistToObj(await cap.result.toJs());
         const nr=R.nr[0], nc=R.nc[0], obs=R.obs, std=R.std, rowlab=R.rowlab, collab=R.collab;
         const rowName=cols.row, colName=cols.col;
-        const headers=[{t:rowName}].concat(collab.map(c=>({t:String(c), num:true})));
-        const rows=[];
-        for(let i=0;i<nr;i++){ rows.push([{t:String(rowlab[i])}].concat(collab.map((_,j)=>({t:obs[i*nc+j], num:true})))); }
+        const pc = pctOpts();
+        const headers=[{t:rowName}].concat(collab.map(c=>({t:String(c), num:true}))).concat([{t:'Total', num:true}]);
+        const rows=crossRows(obs, nr, nc, rowlab, pc);
         const sparse = R.minexp[0] < 5;
         const ciPct = Math.round((2*env.conf - 1)*100);
         const warnH = sparse ? ` Some expected counts &lt; 5; interpret with caution (Fisher's exact is preferred for sparse tables).` : '';
@@ -1083,6 +1141,7 @@ list(chi2 = unname(ct$statistic), df = unname(ct$parameter), p = ct$p.value,
           html:`<i>Note.</i> \u03C7\u00B2(${R.df[0]}, <i>N</i> = ${R.N[0]}) = ${f2(R.chi2[0])}, <i>p</i> ${pFmt(R.p[0])}. Cram\u00E9r's <i>V</i> (bias-corrected) = ${nz(R.V[0])}, ${ciPct}% CI [${nz(R.cil[0])}, ${nz(R.ciu[0])}].${warnH}`,
           plain:`Note. chi-square(${R.df[0]}, N = ${R.N[0]}) = ${f2(R.chi2[0])}, p ${pFmt(R.p[0])}. Cramer's V (bias-corrected) = ${nz(R.V[0])}, ${ciPct}% CI [${nz(R.cil[0])}, ${nz(R.ciu[0])}].${warnP}`
         };
+        { const pn = pctNote(pc); note.html += pn; note.plain += pn; }
         const main = buildAPA({ title:`Contingency Table and Chi-Square Test of ${rowName} by ${colName}`, headers, rows, note });
         const residRows = [];
         for(let i=0;i<nr;i++){
@@ -1164,7 +1223,10 @@ list(chi2 = unname(ct$statistic), df = unname(ct$parameter), p = ct$p.value, N =
         const k=R.k[0], lab=R.lab, obs=R.obs, exp=R.exp, varName=cols.variable;
         const headers=[{t:varName},{t:'Observed',num:true},{t:'Expected',num:true},{t:'Std. residual',num:true}];
         const rows=[];
-        for(let i=0;i<k;i++){ rows.push([{t:String(lab[i])},{t:obs[i],num:true},{t:f2(exp[i]),num:true},{t:f2(R.std[i]),num:true}]); }
+        const Ng = R.N[0];
+        const gcell = (v, txt) => ({ t:`${txt}<br>(${fmtP(v,Ng)}%)`, p:`${txt} (${fmtP(v,Ng)}%)`, num:true });
+        for(let i=0;i<k;i++){ rows.push([{t:String(lab[i])}, gcell(obs[i], String(obs[i])), gcell(exp[i], f2(exp[i])), {t:f2(R.std[i]),num:true}]); }
+        rows.push([{t:'Total'}, gcell(Ng, String(Ng)), gcell(Ng, f2(Ng)), {t:'',num:true}]);
         const sparse = R.minexp[0] < 5;
         const ciPct = Math.round((2*env.conf - 1)*100);
         const warnH = sparse ? ` Some expected counts &lt; 5; interpret with caution.` : '';
@@ -1173,6 +1235,7 @@ list(chi2 = unname(ct$statistic), df = unname(ct$parameter), p = ct$p.value, N =
           html:`<i>Note.</i> \u03C7\u00B2(${R.df[0]}, <i>N</i> = ${R.N[0]}) = ${f2(R.chi2[0])}, <i>p</i> ${pFmt(R.p[0])}. Cohen's <i>w</i> = ${f2(R.w[0])}, ${ciPct}% CI [${f2(R.cil[0])}, ${f2(R.ciu[0])}].${warnH} Cutoff = &Phi;<sup>&minus;1</sup>(1 &minus; ${nz(env.siglev,2)} / (2<i>m</i>)) = ${f2(R.cut[0])}, <i>m</i> = ${R.m[0]}. Residuals with |<i>z</i>| greater than the cutoff flag the categories driving the departure from the expected proportions.`,
           plain:`Note. chi-square(${R.df[0]}, N = ${R.N[0]}) = ${f2(R.chi2[0])}, p ${pFmt(R.p[0])}. Cohen's w = ${f2(R.w[0])}, ${ciPct}% CI [${f2(R.cil[0])}, ${f2(R.ciu[0])}].${warnP} Cutoff = qnorm(1 - ${nz(env.siglev,2)} / (2m)) = ${f2(R.cut[0])}, m = ${R.m[0]}. Residuals with |z| greater than the cutoff flag the categories driving the departure from the expected proportions.`
         };
+        { const pn = ' Percentages in parentheses are the observed percentage of N (under Observed) and the expected percentage (under Expected).'; note.html += pn; note.plain += pn; }
         const out = buildAPA({ title:`Goodness-of-Fit Test for ${varName}`, headers, rows, note });
         document.getElementById('console').textContent = consoleText;
         setAPA(out.screenHtml);
@@ -2553,6 +2616,7 @@ list(lv = lv, ns = ns, k = k, m = m,
   },
 
   fisher: {
+    pctControls: true,
     label: "Fisher's exact test (independence, sparse tables)",
     sided: true,
     dropHint: "Two categorical columns. If your data is pre-aggregated (one row per cell with a frequency), also pick the counts column. Use this when expected counts are small.",
@@ -2602,9 +2666,9 @@ list(p = ft$p.value, or = orv, orl = orl, oru = oru, is22 = is22, mc = 1 - exact
         const R = rlistToObj(await cap.result.toJs());
         const nr=R.nr[0], nc=R.nc[0], obs=R.obs, rowlab=R.rowlab, collab=R.collab;
         const rowName=cols.row, colName=cols.col, ci=pct(env.cilev);
-        const headers=[{t:rowName}].concat(collab.map(c=>({t:String(c), num:true})));
-        const rows=[];
-        for(let i=0;i<nr;i++){ rows.push([{t:String(rowlab[i])}].concat(collab.map((_,j)=>({t:obs[i*nc+j], num:true})))); }
+        const pc = pctOpts();
+        const headers=[{t:rowName}].concat(collab.map(c=>({t:String(c), num:true}))).concat([{t:'Total', num:true}]);
+        const rows=crossRows(obs, nr, nc, rowlab, pc);
         const is22 = R.is22[0]===1, mc = R.mc[0]===1;
         const orH = is22 ? ` Odds ratio (conditional MLE) = ${f2(R.or[0])}, ${ci} exact CI [${fci(R.orl[0])}, ${fci(R.oru[0])}].` : '';
         const orP = is22 ? ` Odds ratio (conditional MLE) = ${f2(R.or[0])}, ${ci} exact CI [${fci(R.orl[0])}, ${fci(R.oru[0])}].` : '';
@@ -2615,6 +2679,7 @@ list(p = ft$p.value, or = orv, orl = orl, oru = oru, is22 = is22, mc = 1 - exact
           html:`<i>Note.</i> Fisher's exact test, <i>N</i> = ${R.N[0]}, <i>p</i> ${pFmt(R.p[0])}, ${sided}${sideCaveat}.${orH}${mcH}`,
           plain:`Note. Fisher's exact test, N = ${R.N[0]}, p ${pFmt(R.p[0])}, ${sided}${sideCaveat}.${orP}${mcH}`
         };
+        { const pn = pctNote(pc); note.html += pn; note.plain += pn; }
         const main = buildAPA({ title:`Contingency Table and Fisher's Exact Test of ${rowName} by ${colName}`, headers, rows, note });
         document.getElementById('console').textContent = consoleText;
         setAPA(main.screenHtml);
@@ -2675,13 +2740,17 @@ list(p = res$p.value, mc = mc, k = k, N = N, w = w,
         const k=R.k[0], lab=R.lab, obs=R.obs, exp=R.expv, varName=cols.variable;
         const headers=[{t:varName},{t:'Observed',num:true},{t:'Expected',num:true}];
         const rows=[];
-        for(let i=0;i<k;i++){ rows.push([{t:String(lab[i])},{t:obs[i],num:true},{t:f2(exp[i]),num:true}]); }
+        const Ne = R.N[0];
+        const ecell = (v, txt) => ({ t:`${txt}<br>(${fmtP(v,Ne)}%)`, p:`${txt} (${fmtP(v,Ne)}%)`, num:true });
+        for(let i=0;i<k;i++){ rows.push([{t:String(lab[i])}, ecell(obs[i], String(obs[i])), ecell(exp[i], f2(exp[i]))]); }
+        rows.push([{t:'Total'}, ecell(Ne, String(Ne)), ecell(Ne, f2(Ne))]);
         const mc = R.mc[0]===1;
         const mcTxt = mc ? ` The p-value is from a seeded Monte Carlo simulation (100,000 trials; exact enumeration infeasible at this n) and is reproducible.` : '';
         const note = {
           html:`<i>Note.</i> Exact multinomial test, <i>N</i> = ${R.N[0]}, <i>p</i> ${pFmt(R.p[0])}. Cohen's <i>w</i> = ${f2(R.w[0])} (descriptive).${mcTxt}`,
           plain:`Note. Exact multinomial test, N = ${R.N[0]}, p ${pFmt(R.p[0])}. Cohen's w = ${f2(R.w[0])} (descriptive).${mcTxt}`
         };
+        { const pn = ' Percentages in parentheses are the observed percentage of N (under Observed) and the expected percentage (under Expected).'; note.html += pn; note.plain += pn; }
         const out = buildAPA({ title:`Exact Multinomial Goodness-of-Fit Test for ${varName}`, headers, rows, note });
         document.getElementById('console').textContent = consoleText;
         setAPA(out.screenHtml);
@@ -2926,6 +2995,7 @@ function updateEdaControls(){
   document.getElementById('confControls').classList.toggle('hidden', testSel.value==='eda');
   document.getElementById('altControls').classList.toggle('hidden', !(t && t.sided));
   document.getElementById('adjControls').classList.toggle('hidden', !(t && t.multiplicity));
+  document.getElementById('pctControls').classList.toggle('hidden', !(t && t.pctControls));
   updateCiReadout();
 }
 // The one user-facing setting is the significance level. The interval level
