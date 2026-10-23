@@ -726,13 +726,25 @@ const TESTS = {
 
   ind_means: {
     label: "Two-sample - Independent means — Welch's t test + Hedges' g*s",
-    dropHint: "Long/tidy data: a numeric outcome column and a 2-level grouping column.",
+    dropHint: "Long/tidy data: a numeric outcome column and a 2-level grouping column. Then choose the first group (the group whose mean comes first in the difference).",
     sided: true,
-    methodNote: "<b>Why these methods.</b> Welch's <i>t</i> is the default because the equal-variance assumption rarely holds and pretesting it does not help (Delacre, Lakens &amp; Leys, 2017). Hedges' <i>g*</i><sub>s</sub> pairs with it, the non-pooled SD with a small-sample correction, and is preferred over Cohen's <i>d</i> under unequal variances (Delacre et al., 2021).",
+    methodNote: "<b>Why these methods.</b> Welch's <i>t</i> is the default because the equal-variance assumption rarely holds and pretesting it does not help (Delacre, Lakens &amp; Leys, 2017). Hedges' <i>g*</i><sub>s</sub> pairs with it, the non-pooled SD with a small-sample correction, and is preferred over Cohen's <i>d</i> under unequal variances (Delacre et al., 2021). <b>Setup.</b> The first group is the group whose mean comes first, so the mean difference is the first group minus the other group. Swapping the groups reverses the sign of the mean difference, its confidence interval, <i>t</i>, and <i>g*</i><sub>s</sub>; the <i>p</i>-value and the absolute size of each statistic are unchanged.",
     roles: [
       { key:'resp', kind:'numeric', label:'Response — numeric outcome' },
       { key:'grp',  kind:'group2',  label:'Group — must have exactly 2 levels' }
     ],
+    params: [
+      { key:'group1', type:'level', fromRole:'grp', required:true, shortLabel:'first group',
+        label:'First group: the group whose mean comes first; the difference reported is the first group minus the other group' }
+    ],
+    liveHint(cols, pv){
+      const r = cols.resp, g = cols.grp;
+      if(!r || !g || !columns[g]) return '';
+      if(!pv.group1)
+        return 'Choose the first group. It decides which mean comes first, and so the sign of the mean difference and of Hedges\' <i>g*</i><sub>s</sub>.';
+      const g2 = levelsOf(columns[g]).filter(x=>x!==pv.group1)[0] || '';
+      return `Mean difference = mean ${r} in ${pv.group1} (first group) − mean ${r} in ${g2}.`;
+    },
     defaults: { resp:'bwt', grp:'smoke' },
     resultKeys: ['t','df','p','md','cil','ciu','g','gl','gu','m1','s1','n1','m2','s2','n2','se'],
     rProgram: FIND_NCP + `
@@ -749,6 +761,9 @@ g.star.ci <- function(x.bar.1, x.bar.2, s.1, s.2, n.1, n.2, alpha) {
   data.frame(g.star, g.star.low = ncp.star.low*scale, g.star.up = ncp.star.up*scale)
 }
 d <- data.frame(resp = as.numeric(resp), grp = factor(grp))
+if (!(group1 %in% levels(d$grp))) stop("The first group must be one of the levels of the group column.")
+# The first group chosen by the user is group 1; the other level is group 2.
+d$grp <- factor(d$grp, levels = c(group1, setdiff(levels(d$grp), group1)))
 lv <- levels(d$grp)
 tt <- t.test(resp ~ grp, data = d, conf.level = cilev, alternative = alt)
 # A one-sided test is reported with the two-sided interval at 1 - 2*alpha.
@@ -766,7 +781,8 @@ c(t=unname(tt$statistic), df=unname(tt$parameter), p=tt$p.value,
   m1=m1, s1=s1, n1=n1, m2=m2, s2=s2, n2=n2,
   se=sqrt(s1^2/n1 + s2^2/n2))`,
     render(R, ctx){
-      const [l1,l2] = ctx.levels.grp, grp = ctx.cols.grp, resp = ctx.cols.resp;
+      // Group order follows the user's choice of first group (the R program applies the same rule).
+      const l1 = ctx.env.group1, l2 = ctx.levels.grp.filter(l=>l!==l1)[0], grp = ctx.cols.grp, resp = ctx.cols.resp;
       const Dg = seDigits(R.s1/Math.sqrt(R.n1), R.s2/Math.sqrt(R.n2));   // descriptives
       const Dd = seDigits(R.se);                                         // mean difference
       return buildAPA({
