@@ -1785,7 +1785,7 @@ list(lv = lv, xs = xs, ns = ns, ps = ps, k = k, m = m,
   linreg: {
     label: "Simple linear regression (+ Pearson r, plots)",
     dropHint: "Two numeric columns: a response (Y) and a single predictor (X).",
-    methodNote: "<b>Interval methods.</b> Coefficient intervals use the <i>t</i> distribution; the Pearson correlation interval uses the Fisher <i>z</i> transformation (cor.test). The plot's inner (darker) band is the confidence band for the mean response; the outer (lighter) band is the prediction band for a single new observation. <i>R</i>\u00B2 is the proportion of variance in the response explained by the predictor; adjusted <i>R</i>\u00B2 penalizes for model complexity.",
+    methodNote: "<b>Interval methods.</b> Coefficient intervals use the <i>t</i> distribution; the Pearson correlation interval uses the Fisher <i>z</i> transformation (cor.test). The plot's inner (darker) band is the confidence band for the mean response; the outer (lighter) band is the prediction band for a single new observation. <i>R</i>\u00B2 is the proportion of variance in the response explained by the predictor; adjusted <i>R</i>\u00B2 penalizes for model complexity. <b>Analysis of variance table.</b> Table 2 splits the total variation in the response into the part accounted for by the line (regression) and the part left over (residual), so SS<sub>Total</sub> = SS<sub>Regression</sub> + SS<sub>Residual</sub>. The residual mean square estimates the error variance \u03C3\u00B2, and <i>R</i>\u00B2 = SS<sub>Regression</sub> / SS<sub>Total</sub>. With one predictor the <i>F</i> test is the same test as the <i>t</i> test of the slope (<i>F</i> = <i>t</i>\u00B2), and the same as the test of Pearson's <i>r</i>.",
     roles: [
       { key:'response',  kind:'numeric', label:'Response (Y) — numeric outcome' },
       { key:'predictor', kind:'numeric', label:'Predictor (X) — numeric' }
@@ -1796,7 +1796,7 @@ list(lv = lv, xs = xs, ns = ns, ps = ps, k = k, m = m,
     packages: ['ggplot2'],
     plotCaptions: ['Regression with confidence and prediction bands', 'Residuals vs fitted (right axis: standardized)', 'Normal Q-Q of residuals'],
     defaults: { response:'bmd', predictor:'age' },
-    resultKeys: ['b0','b0se','b0t','b0p','b0l','b0u','b1','b1se','b1t','b1p','b1l','b1u','f','df1','df2','fp','r2','adjr2','r','rl','ru','n','px','pcl','pcu','ppl','ppu'],
+    resultKeys: ['b0','b0se','b0t','b0p','b0l','b0u','b1','b1se','b1t','b1p','b1l','b1u','f','df1','df2','fp','r2','adjr2','r','rl','ru','n','px','pcl','pcu','ppl','ppu','ssr','sse'],
     rProgram: `
 y <- as.numeric(response); x <- as.numeric(predictor)
 fit <- lm(y ~ x); s <- summary(fit); co <- s$coefficients
@@ -1804,6 +1804,8 @@ ci <- confint(fit, level = conf)
 fstat <- unname(s$fstatistic[1]); df1 <- unname(s$fstatistic[2]); df2 <- unname(s$fstatistic[3])
 ct <- cor.test(x, y, conf.level = conf)
 print(s)
+an <- anova(fit); ssr <- an[1, "Sum Sq"]; sse <- an[2, "Sum Sq"]
+cat("\\nAnalysis of variance table:\\n"); print(an)
 cat(sprintf("\\n%.0f%% CI for coefficients:\\n", conf*100)); print(ci)
 cat(sprintf("\\nPearson r = %.4f, %.0f%% CI [%.4f, %.4f] (Fisher z)\\n", unname(ct$estimate), conf*100, ct$conf.int[1], ct$conf.int[2]))
 if (is.finite(x0)) {
@@ -1842,7 +1844,7 @@ c(b0=co[1,1], b0se=co[1,2], b0t=co[1,3], b0p=co[1,4], b0l=ci[1,1], b0u=ci[1,2],
   f=fstat, df1=df1, df2=df2, fp=pf(fstat, df1, df2, lower.tail=FALSE),
   r2=s$r.squared, adjr2=s$adj.r.squared,
   r=unname(ct$estimate), rl=ct$conf.int[1], ru=ct$conf.int[2], n=length(y),
-  px=px, pcl=pcl, pcu=pcu, ppl=ppl, ppu=ppu)`,
+  px=px, pcl=pcl, pcu=pcu, ppl=ppl, ppu=ppu, ssr=ssr, sse=sse)`,
     render(R, ctx){
       const resp=ctx.cols.response, pred=ctx.cols.predictor, ci=pct(ctx.conf);
       const pc = p => p < .001 ? '< .001' : nz(p,3);
@@ -1855,7 +1857,7 @@ c(b0=co[1,1], b0se=co[1,2], b0t=co[1,3], b0p=co[1,4], b0l=ci[1,1], b0u=ci[1,2],
         predH = ` Predicted at ${pred} = ${x0}: fitted ${resp} = ${f2(R.px)}, ${ci} confidence interval for the mean [${f2(R.pcl)}, ${f2(R.pcu)}], ${ci} prediction interval for a new observation [${f2(R.ppl)}, ${f2(R.ppu)}].`;
         predP = ` Predicted at ${pred} = ${x0}: fitted ${resp} = ${f2(R.px)}, ${ci} confidence interval for the mean [${f2(R.pcl)}, ${f2(R.pcu)}], ${ci} prediction interval for a new observation [${f2(R.ppl)}, ${f2(R.ppu)}].`;
       }
-      return buildAPA({
+      const t1 = buildAPA({
         title:`Simple Linear Regression: ${resp} predicted from ${pred}`,
         headers:[{t:'Term'},{t:'B',it:true,num:true},{t:'SE',it:true,num:true},{t:'t',it:true,num:true},{t:'p',it:true,num:true},{t:`${ci} CI`,num:true}],
         rows:[
@@ -1867,6 +1869,30 @@ c(b0=co[1,1], b0se=co[1,2], b0t=co[1,3], b0p=co[1,4], b0l=ci[1,1], b0u=ci[1,2],
           plain:`Note. Overall model: F(${R.df1}, ${R.df2}) = ${f2(R.f)}, p ${pFmt(R.fp)}. R^2 = ${nz(R.r2)}, adjusted R^2 = ${nz(R.adjr2)}. Pearson r = ${nz(R.r)}, ${ci} CI [${nz(R.rl)}, ${nz(R.ru)}] (Fisher z). n = ${R.n}.${predP}`
         }
       });
+      // Table 2: analysis of variance. SS and MS are in squared outcome units, so they
+      // stay at two decimals; s (the residual standard error) is in the outcome's units.
+      const ssto = R.ssr + R.sse, msr = R.ssr / R.df1, mse = R.sse / R.df2, sRes = Math.sqrt(mse);
+      const blank = {t:'',num:true};
+      const t2 = buildAPA({
+        num:2,
+        title:`Analysis of Variance for the Regression of ${resp} on ${pred}`,
+        headers:[{t:'Source'},{t:'SS',it:true,num:true},{t:'df',it:true,num:true},{t:'MS',it:true,num:true},{t:'F',it:true,num:true},{t:'p',it:true,num:true}],
+        rows:[
+          [{t:'Regression'},{t:f2(R.ssr),num:true},{t:R.df1,num:true},{t:f2(msr),num:true},{t:f2(R.f),num:true},{t:pc(R.fp),num:true}],
+          [{t:'Residual'},{t:f2(R.sse),num:true},{t:R.df2,num:true},{t:f2(mse),num:true},blank,blank],
+          [{t:'Total'},{t:f2(ssto),num:true},{t:R.n-1,num:true},blank,blank,blank]
+        ],
+        note:{
+          html:`<i>Note.</i> SS = sum of squares; MS = mean square (SS divided by <i>df</i>). <i>R</i><sup>2</sup> = SS<sub>Regression</sub> / SS<sub>Total</sub> = ${nz(R.r2)}. The residual standard error is <i>s</i> = \u221AMS<sub>Residual</sub> = ${f2(sRes)}.`,
+          plain:`Note. SS = sum of squares; MS = mean square (SS divided by df). R^2 = SS(Regression) / SS(Total) = ${nz(R.r2)}. The residual standard error is s = sqrt(MS(Residual)) = ${f2(sRes)}.`
+        }
+      });
+      // Both tables travel together on screen and with the Copy table button.
+      return {
+        screenHtml: t1.screenHtml + sub2(t2),
+        copyHtml: t1.copyHtml + '<br>' + t2.copyHtml,
+        plain: `${t1.plain}\n\n${t2.plain}`
+      };
     }
   },
 
