@@ -1794,6 +1794,7 @@ list(lv = lv, xs = xs, ns = ns, ps = ps, k = k, m = m,
       { key:'x0', type:'number', optional:true, default:'', label:'Predict at X = (optional) — leave blank to skip the prediction' }
     ],
     packages: ['ggplot2'],
+    plotSize: { width:700, height:480 },
     plotCaptions: ['Regression with confidence and prediction bands', 'Residuals vs fitted (right axis: standardized)', 'Normal Q-Q of residuals'],
     defaults: { response:'bmd', predictor:'age' },
     resultKeys: ['b0','b0se','b0t','b0p','b0l','b0u','b1','b1se','b1t','b1p','b1l','b1u','f','df1','df2','fp','r2','adjr2','r','rl','ru','n','px','pcl','pcu','ppl','ppu','ssr','sse'],
@@ -1822,23 +1823,27 @@ pcb <- predict(fit, gr, interval = "confidence", level = conf)
 ppb <- predict(fit, gr, interval = "prediction", level = conf)
 gr$fit <- pcb[,1]; gr$cl <- pcb[,2]; gr$cu <- pcb[,3]; gr$pl <- ppb[,2]; gr$pu <- ppb[,3]
 ACC <- '#0f6b5c'
+TH2 <- theme_minimal(base_size = 17) + theme(plot.title = element_text(size = 15, face = "bold"),
+  panel.grid.minor = element_blank(), panel.grid.major = element_line(colour = "grey85"),
+  axis.title = element_text(size = 16), axis.text = element_text(size = 14, colour = "grey20"))
+xl <- gsub("_", " ", predictor_name); yl <- gsub("_", " ", response_name)
 print(ggplot() +
   geom_ribbon(data = gr, aes(x, ymin = pl, ymax = pu), fill = ACC, alpha = .10) +
   geom_ribbon(data = gr, aes(x, ymin = cl, ymax = cu), fill = ACC, alpha = .25) +
-  geom_line(data = gr, aes(x, fit), color = ACC, linewidth = 1) +
-  geom_point(data = data.frame(x = x, y = y), aes(x, y), alpha = .5, color = ACC) +
-  theme_minimal(base_size = 13) + labs(x = predictor_name, y = response_name, title = "Regression line with confidence and prediction bands"))
+  geom_line(data = gr, aes(x, fit), color = ACC, linewidth = 1.4) +
+  geom_point(data = data.frame(x = x, y = y), aes(x, y), alpha = .8, size = 2.8, color = ACC) +
+  TH2 + labs(x = xl, y = yl, title = "Regression line with confidence and prediction bands"))
 rf <- data.frame(fitted = fitted(fit), resid = resid(fit)); sig <- s$sigma
 print(ggplot(rf, aes(fitted, resid)) +
   geom_hline(yintercept = 0, linetype = 2) +
   geom_hline(yintercept = c(-2, 2)*sig, linetype = 3, colour = "grey55") +
   geom_hline(yintercept = c(-3, 3)*sig, linetype = 3, colour = "grey78") +
-  geom_point(alpha = .5, color = ACC) +
+  geom_point(alpha = .8, size = 2.8, color = ACC) +
   scale_y_continuous(sec.axis = sec_axis(~ . / sig, name = "Standardized residual (residual / s)", breaks = -3:3)) +
-  theme_minimal(base_size = 13) +
+  TH2 +
   labs(x = "Fitted value", y = "Residual", title = "Residuals vs fitted (right axis: standardized)"))
-print(ggplot(rf, aes(sample = resid)) + stat_qq(alpha = .5, color = ACC) + stat_qq_line(color = ACC) +
-  theme_minimal(base_size = 13) + labs(x = "Theoretical quantile", y = "Residual", title = "Normal Q-Q of residuals"))
+print(ggplot(rf, aes(sample = resid)) + stat_qq(alpha = .8, size = 2.8, color = ACC) + stat_qq_line(color = ACC) +
+  TH2 + labs(x = "Theoretical quantile", y = "Residual", title = "Normal Q-Q of residuals"))
 c(b0=co[1,1], b0se=co[1,2], b0t=co[1,3], b0p=co[1,4], b0l=ci[1,1], b0u=ci[1,2],
   b1=co[2,1], b1se=co[2,2], b1t=co[2,3], b1p=co[2,4], b1l=ci[2,1], b1u=ci[2,2],
   f=fstat, df1=df1, df2=df2, fp=pf(fstat, df1, df2, lower.tail=FALSE),
@@ -3425,7 +3430,7 @@ runBtn.addEventListener('click', async ()=>{
   }
   const shelter = await new webR.Shelter();
   try{
-    const cap = await shelter.captureR(t.rProgram, { env, captureGraphics:{ width:820, height:460 } });
+    const cap = await shelter.captureR(t.rProgram, { env, captureGraphics: t.plotSize || { width:820, height:460 } });
     const consoleText = cap.output.filter(o=>o.type==='stdout'||o.type==='stderr').map(o=>o.data).join('\n');
     const vals = await cap.result.toArray();
     const R={}; t.resultKeys.forEach((k,i)=>R[k]=vals[i]);
