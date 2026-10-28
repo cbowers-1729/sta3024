@@ -1785,7 +1785,7 @@ list(lv = lv, xs = xs, ns = ns, ps = ps, k = k, m = m,
   linreg: {
     label: "Simple linear regression (+ Pearson r, plots)",
     dropHint: "Two numeric columns: a response (Y) and a single predictor (X).",
-    methodNote: "<b>Interval methods.</b> Coefficient intervals use the <i>t</i> distribution; the Pearson correlation interval uses the Fisher <i>z</i> transformation (cor.test). The plot's inner (darker) band is the confidence band for the mean response; the outer (lighter) band is the prediction band for a single new observation. <i>R</i>\u00B2 is the proportion of variance in the response explained by the predictor; adjusted <i>R</i>\u00B2 penalizes for model complexity. <b>Analysis of variance table.</b> Table 2 splits the total variation in the response into the part accounted for by the line (regression) and the part left over (residual), so SS<sub>Total</sub> = SS<sub>Regression</sub> + SS<sub>Residual</sub>. The residual mean square estimates the error variance \u03C3\u00B2, and <i>R</i>\u00B2 = SS<sub>Regression</sub> / SS<sub>Total</sub>. With one predictor the <i>F</i> test is the same test as the <i>t</i> test of the slope (<i>F</i> = <i>t</i>\u00B2), and the same as the test of Pearson's <i>r</i>.",
+    methodNote: "<b>Interval methods.</b> Coefficient intervals use the <i>t</i> distribution; the Pearson correlation interval uses the Fisher <i>z</i> transformation (cor.test). The plot's inner (darker) band is the confidence band for the mean response; the outer (lighter) band is the prediction band for a single new observation. <i>R</i>\u00B2 is the proportion of variance in the response explained by the predictor; adjusted <i>R</i>\u00B2 penalizes for model complexity. <b>Analysis of variance table.</b> Table 2 splits the total variation in the response into the part accounted for by the line (regression) and the part left over (residual), so SS<sub>Total</sub> = SS<sub>Regression</sub> + SS<sub>Residual</sub>. The residual mean square estimates the error variance \u03C3\u00B2, and <i>R</i>\u00B2 = SS<sub>Regression</sub> / SS<sub>Total</sub>. With one predictor the <i>F</i> test is the same test as the <i>t</i> test of the slope (<i>F</i> = <i>t</i>\u00B2), and the same as the test of Pearson's <i>r</i>. <b>Influence of single observations.</b> Table 3 and the fourth plot check how much any one observation drives the result. An observation is flagged when its Cook's distance <i>D</i> exceeds 4/<i>n</i>, a common screening rule, or when removing it and refitting the line changes the decision about the slope at your significance level. Cook's distance combines how far an observation is from the line with how unusual its <i>x</i> value is (leverage). Treat a flag as a reason to look, not to delete: say how the conclusion depends on the flagged observations.",
     roles: [
       { key:'response',  kind:'numeric', label:'Response (Y) — numeric outcome' },
       { key:'predictor', kind:'numeric', label:'Predictor (X) — numeric' }
@@ -1795,9 +1795,10 @@ list(lv = lv, xs = xs, ns = ns, ps = ps, k = k, m = m,
     ],
     packages: ['ggplot2'],
     plotSize: { width:700, height:480 },
-    plotCaptions: ['Regression with confidence and prediction bands', 'Residuals vs fitted (right axis: standardized)', 'Normal Q-Q of residuals'],
+    plotCaptions: ['Regression with confidence and prediction bands', 'Residuals vs fitted (right axis: standardized)', 'Normal Q-Q of residuals', 'Cook\'s distance by observation (dotted line: 4/n)'],
     defaults: { response:'bmd', predictor:'age' },
-    resultKeys: ['b0','b0se','b0t','b0p','b0l','b0u','b1','b1se','b1t','b1p','b1l','b1u','f','df1','df2','fp','r2','adjr2','r','rl','ru','n','px','pcl','pcu','ppl','ppu','ssr','sse'],
+    resultKeys: ['b0','b0se','b0t','b0p','b0l','b0u','b1','b1se','b1t','b1p','b1l','b1u','f','df1','df2','fp','r2','adjr2','r','rl','ru','n','px','pcl','pcu','ppl','ppu','ssr','sse','ninf','nflip','cutd','maxd',
+      ...Array.from({length:10},(_,k)=>['obs','x','y','z','h','d','b','p','f'].map(q=>'i'+(k+1)+'_'+q)).flat()],
     rProgram: `
 y <- as.numeric(response); x <- as.numeric(predictor)
 fit <- lm(y ~ x); s <- summary(fit); co <- s$coefficients
@@ -1844,12 +1845,46 @@ print(ggplot(rf, aes(fitted, resid)) +
   labs(x = "Fitted value", y = "Residual", title = "Residuals vs fitted (right axis: standardized)"))
 print(ggplot(rf, aes(sample = resid)) + stat_qq(alpha = .8, size = 2.8, color = ACC) + stat_qq_line(color = ACC) +
   TH2 + labs(x = "Theoretical quantile", y = "Residual", title = "Normal Q-Q of residuals"))
+# Influence of single observations: Cook's distance (flag: D > 4/n) and a leave-one-out
+# refit that records whether removing one observation changes the decision about the slope.
+ok <- complete.cases(x, y); xo <- x[ok]; yo <- y[ok]; nobs <- length(yo)
+cutD <- 4 / nobs; alpha <- 1 - conf
+cd <- cooks.distance(fit); hv <- hatvalues(fit); sr <- resid(fit) / sig
+b1loo <- rep(NA_real_, nobs); ploo <- rep(NA_real_, nobs)
+if (nobs >= 5) for (i in seq_len(nobs)) {
+  xi <- xo[-i]; yi <- yo[-i]
+  if (length(unique(xi)) > 1) {
+    cf <- tryCatch(summary(lm(yi ~ xi))$coefficients, error = function(e) NULL)
+    if (!is.null(cf) && nrow(cf) == 2) { b1loo[i] <- cf[2,1]; ploo[i] <- cf[2,4] }
+  }
+}
+flagD <- cd > cutD
+flipD <- !is.na(ploo) & ((co[2,4] < alpha) != (ploo < alpha))
+keep <- which(flagD | flipD); keep <- keep[order(-cd[keep])]
+ninf <- length(keep); nflip <- sum(flipD)
+MAXR <- 10; shown <- head(keep, MAXR)
+mat <- matrix(NA_real_, MAXR, 9)
+for (k in seq_along(shown)) { i <- shown[k]
+  mat[k,] <- c(i, xo[i], yo[i], sr[i], hv[i], cd[i], b1loo[i], ploo[i], flagD[i] + 2 * flipD[i]) }
+cdf <- data.frame(obs = seq_along(cd), D = unname(cd), flag = unname(flagD), lab = sprintf("%g, %g", xo, yo))
+lab5 <- head(cdf[cdf$flag, ][order(-cdf$D[cdf$flag]), ], 5)
+print(ggplot(cdf, aes(obs, D)) +
+  geom_hline(yintercept = cutD, linetype = 3, colour = "grey45") +
+  geom_segment(aes(xend = obs, yend = 0, colour = flag), linewidth = 0.9, alpha = .85) +
+  geom_point(aes(colour = flag, size = flag)) +
+  geom_text(data = lab5, aes(label = lab), hjust = -0.12, vjust = -0.3, size = 5.2, colour = "grey20") +
+  scale_colour_manual(values = c("FALSE" = ACC, "TRUE" = "#c98a2b"), guide = "none") +
+  scale_size_manual(values = c("FALSE" = 2.4, "TRUE" = 3.6), guide = "none") +
+  annotate("text", x = nobs, y = cutD, label = sprintf("4/n = %.2f", cutD), hjust = 1, vjust = -0.6, size = 5.2, colour = "grey30") +
+  scale_x_continuous(expand = expansion(mult = c(.02, .12))) + expand_limits(y = cutD * 1.15) +
+  TH2 + labs(x = "Observation (row of the data)", y = "Cook's distance", title = "Cook's distance by observation"))
 c(b0=co[1,1], b0se=co[1,2], b0t=co[1,3], b0p=co[1,4], b0l=ci[1,1], b0u=ci[1,2],
   b1=co[2,1], b1se=co[2,2], b1t=co[2,3], b1p=co[2,4], b1l=ci[2,1], b1u=ci[2,2],
   f=fstat, df1=df1, df2=df2, fp=pf(fstat, df1, df2, lower.tail=FALSE),
   r2=s$r.squared, adjr2=s$adj.r.squared,
   r=unname(ct$estimate), rl=ct$conf.int[1], ru=ct$conf.int[2], n=length(y),
-  px=px, pcl=pcl, pcu=pcu, ppl=ppl, ppu=ppu, ssr=ssr, sse=sse)`,
+  px=px, pcl=pcl, pcu=pcu, ppl=ppl, ppu=ppu, ssr=ssr, sse=sse,
+  ninf=ninf, nflip=nflip, cutd=cutD, maxd=max(cd), as.vector(t(mat)))`,
     render(R, ctx){
       const resp=ctx.cols.response, pred=ctx.cols.predictor, ci=pct(ctx.conf);
       const pc = p => p < .001 ? '< .001' : nz(p,3);
@@ -1892,11 +1927,50 @@ c(b0=co[1,1], b0se=co[1,2], b0t=co[1,3], b0p=co[1,4], b0l=ci[1,1], b0u=ci[1,2],
           plain:`Note. SS = sum of squares; MS = mean square (SS divided by df). R^2 = SS(Regression) / SS(Total) = ${nz(R.r2)}. The residual standard error is s = sqrt(MS(Residual)) = ${f2(sRes)}.`
         }
       });
-      // Both tables travel together on screen and with the Copy table button.
+      // Table 3: influence of single observations (Cook's D > 4/n, or a change in the
+      // decision about the slope when the observation is removed and the line refit).
+      const alphaTxt = nz(1 - ctx.conf, 3).replace(/0+$/,'').replace(/\.$/,'');
+      const cutTxt = f2(R.cutd, 2), maxTxt = f2(R.maxd, 2);
+      const flagTxt = {1:'Cook’s <i>D</i>', 2:'Decision change', 3:'Both'};
+      const flagPlain = {1:'Cooks D', 2:'Decision change', 3:'Both'};
+      const nShown = Math.min(R.ninf, 10);
+      const flipSent = R.nflip === 0
+        ? `Removing any single observation leaves the decision about the slope (at α = ${alphaTxt}) unchanged.`
+        : `Removing any one of ${R.nflip} observation${R.nflip===1?'':'s'} changes the decision about the slope (at α = ${alphaTxt}).`;
+      const moreSent = R.ninf > nShown ? ` The ${nShown} observations with the largest Cook’s <i>D</i> are shown (${R.ninf} flagged).` : '';
+      const morePlain = R.ninf > nShown ? ` The ${nShown} observations with the largest Cook's D are shown (${R.ninf} flagged).` : '';
+      let t3;
+      if(R.ninf === 0){
+        const msg = `No observation has Cook’s <i>D</i> greater than 4/<i>n</i> = ${cutTxt} (largest <i>D</i> = ${maxTxt}), and removing any single observation leaves the decision about the slope (at α = ${alphaTxt}) unchanged.`;
+        const msgP = `No observation has Cook's D greater than 4/n = ${cutTxt} (largest D = ${maxTxt}), and removing any single observation leaves the decision about the slope (at alpha = ${alphaTxt}) unchanged.`;
+        t3 = {
+          screenHtml: `<p class="tnum">Table 3</p><p class="ttitle">Influence of Single Observations on the Regression of ${resp} on ${pred}</p><p class="note">${msg}</p>`,
+          copyHtml: `<p style="font-family:'Times New Roman',serif;font-size:11pt;margin:6pt 0 0;">${msg}</p>`,
+          plain: `Table 3\nInfluence of Single Observations on the Regression of ${resp} on ${pred}\n\n${msgP}`
+        };
+      } else {
+        const rows3 = [];
+        for(let k=1; k<=nShown; k++){
+          const g = q => R['i'+k+'_'+q];
+          rows3.push([{t:String(g('obs')),num:true},{t:f2(g('x'),0),num:true},{t:f2(g('y'),0),num:true},{t:f2(g('z')),num:true},{t:nz(g('h'),3),num:true},{t:f2(g('d'),3),num:true},
+            {t:Number.isFinite(g('b'))?f2(g('b'),D1):'',num:true},{t:Number.isFinite(g('p'))?pc(g('p')):'',num:true},{t:flagTxt[g('f')],p:flagPlain[g('f')],num:true}]);
+        }
+        t3 = buildAPA({
+          num:3,
+          title:`Influence of Single Observations on the Regression of ${resp} on ${pred}`,
+          headers:[{t:'Obs.',it:false,num:true},{t:pred,num:true},{t:resp,num:true},{t:'Std. residual',num:true},{t:'Leverage',num:true},{t:'Cook’s <i>D</i>',num:true},{t:'<i>B</i> without',num:true},{t:'<i>p</i> without',num:true},{t:'Flag',num:true}],
+          rows:rows3,
+          note:{
+            html:`<i>Note.</i> Observations are flagged if Cook’s <i>D</i> exceeds 4/<i>n</i> = ${cutTxt} (<i>n</i> = ${R.n}) or if removing the observation and refitting the line changes the decision about the slope at α = ${alphaTxt}. <i>Obs.</i> is the row among the observations used in the fit; <i>Std. residual</i> is the residual divided by <i>s</i>, as on the right-hand axis of the residual plot. <i>B</i> without and <i>p</i> without are the slope and its <i>p</i>-value after that observation is removed (all observations: <i>B</i> = ${f2(R.b1,D1)}, <i>p</i> ${pFmt(R.b1p)}). ${flipSent} Largest Cook’s <i>D</i> = ${maxTxt}.${moreSent}`,
+            plain:`Note. Observations are flagged if Cook's D exceeds 4/n = ${cutTxt} (n = ${R.n}) or if removing the observation and refitting the line changes the decision about the slope at alpha = ${alphaTxt}. Obs. is the row among the observations used in the fit; Std. residual is the residual divided by s, as on the right-hand axis of the residual plot. B without and p without are the slope and its p-value after that observation is removed (all observations: B = ${f2(R.b1,D1)}, p ${pFmt(R.b1p)}). ${flipSent.replace('α','alpha')} Largest Cook's D = ${maxTxt}.${morePlain}`
+          }
+        });
+      }
+      // The tables travel together on screen and with the Copy table button.
       return {
-        screenHtml: t1.screenHtml + sub2(t2),
-        copyHtml: t1.copyHtml + '<br>' + t2.copyHtml,
-        plain: `${t1.plain}\n\n${t2.plain}`
+        screenHtml: t1.screenHtml + sub2(t2) + sub2(t3),
+        copyHtml: t1.copyHtml + '<br>' + t2.copyHtml + '<br>' + t3.copyHtml,
+        plain: `${t1.plain}\n\n${t2.plain}\n\n${t3.plain}`
       };
     }
   },
