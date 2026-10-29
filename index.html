@@ -1134,7 +1134,7 @@ list(chi2 = unname(ct$statistic), df = unname(ct$parameter), p = ct$p.value,
      N = sum(tab), V = cv[[1]], cil = cv$CI_low, ciu = cv$CI_high, cut = cutz, m = mcmp,
      minexp = min(ct$expected), nr = nrow(tab), nc = ncol(tab),
      rowlab = rownames(tab), collab = colnames(tab),
-     obs = as.vector(t(tab)), std = as.vector(t(std)))`,
+     obs = as.vector(t(tab)), exp = as.vector(t(ct$expected)), std = as.vector(t(std)))`,
     async run({env, cols, active, used, dropped}){
       document.getElementById('edaOut').classList.add('hidden');
       if(!installed.has('effectsize')){ setStatus('Installing effectsize (one-time download)…',{busy:true}); await webR.installPackages(['effectsize']); installed.add('effectsize'); }
@@ -1144,7 +1144,7 @@ list(chi2 = unname(ct$statistic), df = unname(ct$parameter), p = ct$p.value,
         const cap = await shelter.captureR(this.rProgram, { env });
         const consoleText = cap.output.filter(o=>o.type==='stdout'||o.type==='stderr').map(o=>o.data).join('\n');
         const R = rlistToObj(await cap.result.toJs());
-        const nr=R.nr[0], nc=R.nc[0], obs=R.obs, std=R.std, rowlab=R.rowlab, collab=R.collab;
+        const nr=R.nr[0], nc=R.nc[0], obs=R.obs, exp=R.exp, std=R.std, rowlab=R.rowlab, collab=R.collab;
         const rowName=cols.row, colName=cols.col;
         const pc = pctOpts();
         const headers=[{t:rowName}].concat(collab.map(c=>({t:String(c), num:true}))).concat([{t:'Total', num:true}]);
@@ -1159,12 +1159,32 @@ list(chi2 = unname(ct$statistic), df = unname(ct$parameter), p = ct$p.value,
         };
         { const pn = pctNote(pc); note.html += pn; note.plain += pn; }
         const main = buildAPA({ title:`Contingency Table and Chi-Square Test of ${rowName} by ${colName}`, headers, rows, note });
+        // Table 2: expected counts under independence/homogeneity, E = (row total x column total) / N.
+        // One decimal, like the percentages; a nonzero value that one decimal would show as 0.0 gets
+        // more decimals until two significant digits show.
+        const fmtE = v => { const x = Number(v); if(!Number.isFinite(x)) return String(v);
+          const d = (x > 0 && Number(x.toFixed(1)) === 0) ? 1 - Math.floor(Math.log10(x)) : 1;
+          return x.toFixed(d); };
+        const expRows = [];
+        for(let i=0;i<nr;i++){
+          expRows.push([{t:String(rowlab[i])}].concat(collab.map((_,j)=>({t:fmtE(exp[i*nc+j]), num:true}))));
+        }
+        const tE = buildAPA({
+          num:2,
+          title:`Expected Counts for ${rowName} by ${colName}`,
+          headers:[{t:rowName}].concat(collab.map(c=>({t:String(c), num:true}))),
+          rows:expRows,
+          note:{
+            html:`<i>Note.</i> Expected count = (row total &times; column total) / <i>N</i>, the count in each cell if ${rowName} and ${colName} were unrelated. The smallest expected count is ${fmtE(R.minexp[0])}; each should be at least 5 for the chi-square approximation.`,
+            plain:`Note. Expected count = (row total x column total) / N, the count in each cell if ${rowName} and ${colName} were unrelated. The smallest expected count is ${fmtE(R.minexp[0])}; each should be at least 5 for the chi-square approximation.`
+          }
+        });
         const residRows = [];
         for(let i=0;i<nr;i++){
           residRows.push([{t:String(rowlab[i])}].concat(collab.map((_,j)=>({t:f2(std[i*nc+j]), num:true}))));
         }
         const t2 = buildAPA({
-          num:2,
+          num:3,
           title:`Standardized Residuals for ${rowName} by ${colName}`,
           headers:[{t:rowName}].concat(collab.map(c=>({t:String(c), num:true}))),
           rows:residRows,
@@ -1174,10 +1194,10 @@ list(chi2 = unname(ct$statistic), df = unname(ct$parameter), p = ct$p.value,
           }
         });
         document.getElementById('console').textContent = consoleText;
-        setAPA(main.screenHtml + sub2(t2));
+        setAPA(main.screenHtml + sub2(tE) + sub2(t2));
         lastResult = {
-          plain: `${main.plain}\n\n${t2.plain}`,
-          htmlTable: main.copyHtml + '<br>' + t2.copyHtml
+          plain: `${main.plain}\n\n${tE.plain}\n\n${t2.plain}`,
+          htmlTable: main.copyHtml + '<br>' + tE.copyHtml + '<br>' + t2.copyHtml
         };
         document.getElementById('outStep').classList.remove('hidden');
         const aTxt = nz(env.siglev, 2);
