@@ -1866,18 +1866,27 @@ MAXR <- 10; shown <- head(keep, MAXR)
 mat <- matrix(NA_real_, MAXR, 9)
 for (k in seq_along(shown)) { i <- shown[k]
   mat[k,] <- c(i, xo[i], yo[i], sr[i], hv[i], cd[i], b1loo[i], ploo[i], flagD[i] + 2 * flipD[i]) }
-cdf <- data.frame(obs = seq_along(cd), D = unname(cd), flag = unname(flagD), lab = sprintf("%g, %g", xo, yo))
+cdf <- data.frame(obs = seq_along(cd), D = unname(cd), flag = unname(flagD), lab = sprintf("row %d: (%g, %g)", seq_along(cd), xo, yo))
 lab5 <- head(cdf[cdf$flag, ][order(-cdf$D[cdf$flag]), ], 5)
+gapY <- 0.075 * max(cd, cutD * 1.5)
+lab5$ly <- lab5$D
+if (nrow(lab5) > 1) for (k in 2:nrow(lab5)) lab5$ly[k] <- min(lab5$D[k], lab5$ly[k - 1] - gapY)
+lab5$right <- lab5$obs <= 0.6 * nobs
+lab5$lx <- lab5$obs + ifelse(lab5$right, 0.025, -0.025) * nobs
+lab5$moved <- abs(lab5$ly - lab5$D) > 1e-9
 print(ggplot(cdf, aes(obs, D)) +
   geom_hline(yintercept = cutD, linetype = 3, colour = "grey45") +
   geom_segment(aes(xend = obs, yend = 0, colour = flag), linewidth = 0.9, alpha = .85) +
   geom_point(aes(colour = flag, size = flag)) +
-  geom_text(data = lab5, aes(label = lab), hjust = -0.12, vjust = -0.3, size = 5.2, colour = "grey20") +
+  geom_segment(data = lab5[lab5$moved, ], aes(x = obs, xend = lx, y = D, yend = ly), colour = "grey60", linewidth = 0.4) +
+  geom_text(data = lab5, aes(x = lx, y = ly, label = lab, hjust = ifelse(right, 0, 1)), vjust = 0.5, size = 5.2, colour = "grey20") +
   scale_colour_manual(values = c("FALSE" = ACC, "TRUE" = "#c98a2b"), guide = "none") +
   scale_size_manual(values = c("FALSE" = 2.4, "TRUE" = 3.6), guide = "none") +
   annotate("text", x = nobs, y = cutD, label = sprintf("4/n = %.2f", cutD), hjust = 1, vjust = -0.6, size = 5.2, colour = "grey30") +
   scale_x_continuous(expand = expansion(mult = c(.02, .12))) + expand_limits(y = cutD * 1.15) +
-  TH2 + labs(x = "Observation (row of the data)", y = "Cook's distance", title = "Cook's distance by observation"))
+  TH2 + theme(plot.subtitle = element_text(size = 12, colour = "grey30")) +
+  labs(x = "Observation (row of the data)", y = "Cook's distance", title = "Cook's distance by observation",
+       subtitle = paste0("Labels: row number, then (", xl, ", ", yl, ") values")))
 c(b0=co[1,1], b0se=co[1,2], b0t=co[1,3], b0p=co[1,4], b0l=ci[1,1], b0u=ci[1,2],
   b1=co[2,1], b1se=co[2,2], b1t=co[2,3], b1p=co[2,4], b1l=ci[2,1], b1u=ci[2,2],
   f=fstat, df1=df1, df2=df2, fp=pf(fstat, df1, df2, lower.tail=FALSE),
