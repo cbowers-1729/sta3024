@@ -2536,7 +2536,7 @@ list(lv = lv, ns = ns, mds = mds, k = k, m = m, se = se,
   },
 
   rank_contrasts: {
-    label: "Group standing in the combined sample (rank-based, MCTP) \u2014 3+ groups",
+    label: "Group standing across all groups (rank-based, MCTP) \u2014 3+ groups",
     dropHint: "Long/tidy data: a numeric or ordinal outcome and a grouping column with 3 or more levels. (For exactly 2 groups, use the Brunner-Munzel test.)",
     roles: [
       { key:'resp', kind:'numeric',     label:'Response \u2014 numeric or ordinal outcome' },
@@ -2564,7 +2564,8 @@ if (inherits(res, "error")) {
   hi <- as.integer(sub(" -.*", "", idx)); lo <- as.integer(sub(".*- ", "", idx))
   est <- a$Estimator; low <- a$Lower; up <- a$Upper; pv <- a$p.Value
   st <- a$Statistic
-  # global (pooled-standing) relative effects per group, if available
+  # relative effect of each group vs the unweighted average of all group distributions
+  # (mctp default effect = "unweighted"), so it does not depend on the group sample sizes
   pe <- if (!is.null(res$Data.Info$Effect)) res$Data.Info$Effect else rep(NA, k)
   peL <- if (!is.null(res$Data.Info$Lower)) res$Data.Info$Lower else rep(NA, k)
   peU <- if (!is.null(res$Data.Info$Upper)) res$Data.Info$Upper else rep(NA, k)
@@ -2577,8 +2578,8 @@ if (inherits(res, "error")) {
     cat(sprintf("  %s vs %s: contrast = %.4f, %.0f%% sim. CI [%.4f, %.4f], stat = %.3f, p(adj) = %.5g\\n",
         lv[lo[r]], lv[hi[r]], est[r], conf*100, low[r], up[r], st[r], pv[r]))
   }
-  cat("\\nRelative effect of each group vs the pooled sample:\\n")
-  for (i in seq_len(k)) cat(sprintf("  %s: n = %d, p-hat(pooled) = %s\\n",
+  cat("\\nRelative effect of each group vs the average of the group distributions (unweighted):\\n")
+  for (i in seq_len(k)) cat(sprintf("  %s: n = %d, p-hat = %s\\n",
       lv[i], ns[i], ifelse(is.na(pe[i]), "NA", sprintf("%.4f", pe[i]))))
   list(failed = 0,
        lv = lv, ns = ns, k = k, pe = pe, peL = peL, peU = peU,
@@ -2614,19 +2615,19 @@ if (inherits(res, "error")) {
         const grp=cols.grp, resp=cols.resp, ci=pct(env.conf);
         const k=R.k[0], lv=R.lv, m=R.est.length;
         const pcell = p => p < .001 ? '< .001' : nz(p,3);
-        // group pooled-standing effects table (with per-group simultaneous CIs)
+        // relative effects vs the unweighted average of the group distributions (with per-group simultaneous CIs)
         const rows = lv.map((g,i)=>[
           {t:String(g)}, {t:R.ns[i],num:true},
           {t: (R.pe && Number.isFinite(Number(R.pe[i]))) ? nz(R.pe[i]) : '\u2014', num:true},
           {t: (R.peL && Number.isFinite(Number(R.peL[i]))) ? `[${nz(R.peL[i])}, ${nz(R.peU[i])}]` : '\u2014'}
         ]);
         const note = {
-          html:`<i>Note.</i> Pairwise differences in relative effects (each group vs. the pooled sample), Tukey-type all-pairwise contrasts. BDM-type omnibus (MCTP): <i>p</i> ${pFmt(R.om[0])}. ${ci} simultaneous CIs and adjusted <i>p</i>-values via the multivariate-<i>t</i> (Konietschke et&nbsp;al., 2012).`,
-          plain:`Note. Pairwise differences in relative effects (each group vs. the pooled sample), Tukey-type all-pairwise contrasts. BDM-type omnibus (MCTP): p ${pFmt(R.om[0])}. ${ci} simultaneous CIs and adjusted p-values via the multivariate-t (Konietschke et al., 2012).`
+          html:`<i>Note.</i> Each <i>p\u0302</i> is a relative effect: the probability that a randomly chosen value from the average of the ${k} group distributions (each group weighted equally, regardless of <i>n</i>) is lower than a randomly chosen value from that group, plus half the probability of a tie. Values above .50 mean the group tends to rank above the average. Pairwise contrasts are differences in these relative effects (Tukey-type, all pairs). BDM-type omnibus (MCTP): <i>p</i> ${pFmt(R.om[0])}. ${ci} simultaneous CIs and adjusted <i>p</i>-values via the multivariate-<i>t</i> (Konietschke et&nbsp;al., 2012).`,
+          plain:`Note. Each p-hat is a relative effect: the probability that a randomly chosen value from the average of the ${k} group distributions (each group weighted equally, regardless of n) is lower than a randomly chosen value from that group, plus half the probability of a tie. Values above .50 mean the group tends to rank above the average. Pairwise contrasts are differences in these relative effects (Tukey-type, all pairs). BDM-type omnibus (MCTP): p ${pFmt(R.om[0])}. ${ci} simultaneous CIs and adjusted p-values via the multivariate-t (Konietschke et al., 2012).`
         };
         const main = buildAPA({
           title:`Relative Effects and Pairwise Rank-Based Contrasts for ${resp} by ${grp}`,
-          headers:[{t:grp},{t:'n',it:true,num:true},{t:'p\u0302 (pooled)',num:true},{t:`${ci} CI`,num:true}],
+          headers:[{t:grp},{t:'n',it:true,num:true},{t:'p\u0302',num:true},{t:`${ci} CI`,num:true}],
           rows, note
         });
         // omnibus subordinate line (explicitly non-gating)
@@ -2662,7 +2663,7 @@ if (inherits(res, "error")) {
           htmlTable: main.copyHtml + paraCopy(omHtml) + '<br>' + t2.copyHtml
         };
         document.getElementById('outStep').classList.remove('hidden');
-        const methodNote = `<b>Why this analysis.</b> This is the <i>k</i>-group rank-based analogue of the Brunner-Munzel test, and the nonparametric counterpart to Welch's ANOVA; it assumes neither equal variances nor equal distribution shapes, and it is valid for ordinal as well as interval/ratio outcomes. The <b>omnibus</b> tests <i>H</i>\u2080: all groups have equal relative effects (each group is equally likely to rank high or low against the pooled sample), in the spirit of Brunner, Dette &amp; Munk (1997); here it is the global multivariate-<i>t</i> test that accompanies the MCTP. It is reported as a subordinate, <i>non-gating</i> summary: the pairwise contrasts below control the familywise error rate on their own and are run unconditionally (Sauder &amp; DeMars, 2019). Each <b>pairwise contrast</b> is a difference in relative effects (a positive value means the second-named group tends to rank above the first in the combined sample), with simultaneous confidence intervals and multiplicity-adjusted <i>p</i>-values computed jointly from the multivariate <i>t</i>-distribution (the single-step MCTP of Konietschke, Hothorn &amp; Brunner, 2012), the rank-based parallel to Games-Howell. Because the omnibus and the contrasts are both framed on relative effects, they can occasionally disagree (a significant omnibus with no single significant contrast signals a diffuse effect spread across groups); this is informative, not contradictory. Brunner, Dette &amp; Munk (1997); Brunner &amp; Munzel (2000).`;
+        const methodNote = `<b>Why this analysis.</b> This is the <i>k</i>-group rank-based analogue of the Brunner-Munzel test, and the nonparametric counterpart to Welch's ANOVA; it assumes neither equal variances nor equal distribution shapes, and it is valid for ordinal as well as interval/ratio outcomes. The <b>omnibus</b> tests <i>H</i>\u2080: all groups have equal relative effects (each group is equally likely to rank high or low against the average of the group distributions), in the spirit of Brunner, Dette &amp; Munk (1997); here it is the global multivariate-<i>t</i> test that accompanies the MCTP. It is reported as a subordinate, <i>non-gating</i> summary: the pairwise contrasts below control the familywise error rate on their own and are run unconditionally (Sauder &amp; DeMars, 2019). Each <b>pairwise contrast</b> is a difference in relative effects (a positive value means the second-named group tends to rank above the first, relative to the average of the group distributions), with simultaneous confidence intervals and multiplicity-adjusted <i>p</i>-values computed jointly from the multivariate <i>t</i>-distribution (the single-step MCTP of Konietschke, Hothorn &amp; Brunner, 2012), the rank-based parallel to Games-Howell. Because the omnibus and the contrasts are both framed on relative effects, they can occasionally disagree (a significant omnibus with no single significant contrast signals a diffuse effect spread across groups); this is informative, not contradictory. <b>The reference distribution.</b> Each relative effect compares a group to the <i>unweighted</i> average of all the group distributions, so every group counts equally whatever its sample size; a pooled (<i>n</i>-weighted) reference would let a large group pull the reference toward itself. <b>What a contrast is not.</b> A contrast is not the head-to-head probability of superiority. With <i>k</i> groups it averages comparisons against every group, so the third group's scores enter the comparison of the other two; with exactly two groups it equals that probability minus .50. For the direct question "how likely is a value from A to exceed a value from B?", use the pairwise Brunner-Munzel module. Brunner, Dette &amp; Munk (1997); Brunner &amp; Munzel (2000); Brunner, Konietschke, Pauly &amp; Puri (2017).`;
         const mn=document.getElementById('methodNote'); mn.innerHTML=methodNote; mn.classList.remove('hidden');
         setStatus(`Done. ${used} rows used${dropped?`, ${dropped} dropped for missing values`:''}.`);
       } finally { await shelter.purge(); }
@@ -2786,7 +2787,7 @@ list(lv = lv, ns = ns, k = k, m = m,
         const mLead = multOn(env)
           ? `Multiplicity follows the same scheme as the proportion- and median-difference modules: both the <i>p</i>-values and the intervals carry the same single-step Bonferroni adjustment, so all ${m} intervals hold jointly at ${pct(env.conf)} and test and interval agree by construction, at the cost of power and width. Unticking the box returns the default, which pairs Holm-adjusted <i>p</i>-values with unadjusted per-comparison intervals.`
           : `Multiplicity follows the same scheme as the proportion- and median-difference modules: Holm-adjusted <i>p</i>-values control the familywise error rate for testing (Holm, 1979), while the intervals are unadjusted and each covers its own relative effect with probability ${pct(env.conf)}. The two answer different questions and can disagree; a pair whose interval clears \u00BD next to a nonsignificant Holm <i>p</i>-value is the multiplicity adjustment made visible. Ticking the Bonferroni box puts both on one single-step footing, so that all ${m} intervals hold jointly at ${pct(env.conf)}.`;
-        const methodNote = `<b>Why this analysis.</b> This answers the <i>head-to-head</i> question: for each pair of groups on its own, how likely is a randomly drawn value from one to exceed a value from the other? Each pair is <i>re-ranked using only those two groups</i>, so the comparison of A and B does not depend on what is in any third group. It is the direct <i>k</i>-group extension of the two-sample Brunner-Munzel test (Brunner &amp; Munzel, 2000), which assumes neither equal variances nor equal shapes and is valid for ordinal as well as interval/ratio outcomes. ${mLead} <b>No omnibus is reported here, by design:</b> a global test consistent with this head-to-head estimand has no clean standard form, because re-ranking each pair removes the shared rank structure a joint test would need. The omnibus that <i>does</i> exist, the Brunner-Dette-Munk / MCTP test, answers the different \u201Cstanding in the combined sample\u201D question; if you want that, use the companion \u201CGroup standing in the combined sample\u201D module.${sepNote}`;
+        const methodNote = `<b>Why this analysis.</b> This answers the <i>head-to-head</i> question: for each pair of groups on its own, how likely is a randomly drawn value from one to exceed a value from the other? Each pair is <i>re-ranked using only those two groups</i>, so the comparison of A and B does not depend on what is in any third group. It is the direct <i>k</i>-group extension of the two-sample Brunner-Munzel test (Brunner &amp; Munzel, 2000), which assumes neither equal variances nor equal shapes and is valid for ordinal as well as interval/ratio outcomes. ${mLead} <b>No omnibus is reported here, by design:</b> a global test consistent with this head-to-head estimand has no clean standard form, because re-ranking each pair removes the shared rank structure a joint test would need. The omnibus that <i>does</i> exist, the Brunner-Dette-Munk / MCTP test, answers the different \u201Cstanding across all groups\u201D question; if you want that, use the companion \u201CGroup standing across all groups\u201D module.${sepNote}`;
         const mn=document.getElementById('methodNote'); mn.innerHTML=methodNote; mn.classList.remove('hidden');
         setStatus(`Done. ${used} rows used${dropped?`, ${dropped} dropped for missing values`:''}.`);
       } finally { await shelter.purge(); }
@@ -3143,7 +3144,7 @@ const MENU_SECTIONS = [
   ['All Pairwise Differences (proportions, medians, and ranks)', [
     ['pairprops',        'Proportion differences (Newcombe)'],
     ['median_contrasts', 'Median differences (Smoothed Bootstrap)'],
-    ['rank_contrasts',   'Group standing in the combined sample (rank-based, MCTP)'],
+    ['rank_contrasts',   'Group standing across all groups (rank-based, MCTP)'],
     ['bm_pairwise',      'Head-to-head rank comparisons (pairwise Brunner-Munzel)']]]
 ];
 const inMenu = new Set();
