@@ -2213,17 +2213,42 @@ for (i in 1:(k-1)) for (j in (i+1):k) {
 # Effect sizes: unadjusted per-comparison intervals (not Games-Howell simultaneous)
 cat(sprintf("\\nHedges g*s for each comparison (%.0f%% unadjusted per-comparison CIs):\\n", conf*100))
 for (r in seq_along(eg)) cat(sprintf("  %s - %s: g*s = %.3f, CI [%.3f, %.3f]\\n", gi[r], gj[r], eg[r], egl[r], egu[r]))
-list(lv = lv, ns = ns, ms = ms, ss = ss, k = k,
+# Assumption plots. Residuals are y minus the group mean, divided by that group's SD,
+# so unequal spreads (which Welch already allows) do not show up as heavy tails.
+library(ggplot2)
+ACC <- '#0f6b5c'
+gm <- ave(d$y, d$g); gs <- ave(d$y, d$g, FUN = sd)
+d$z <- ifelse(gs > 0, (d$y - gm)/gs, NA)
+zz <- sort(d$z[!is.na(d$z)])
+qq_drawn <- 0
+if (length(zz) >= 3) {
+  qd <- data.frame(th = qnorm(ppoints(length(zz))), z = zz)
+  qy <- quantile(zz, c(.25, .75), names = FALSE); qx <- qnorm(c(.25, .75))
+  sl <- diff(qy)/diff(qx); ic <- qy[1] - sl*qx[1]
+  print(ggplot(qd, aes(th, z)) + geom_abline(intercept = ic, slope = sl, colour = ACC) +
+    geom_point(alpha = .55, colour = ACC) + theme_minimal(base_size = 13) +
+    labs(x = "Theoretical quantile", y = "Standardized residual (residual / group SD)",
+         title = "Normal Q-Q of residuals (all groups pooled)"))
+  qq_drawn <- 1
+}
+nn <- table(d$g)
+d$gl <- factor(d$g, levels = names(nn), labels = paste0(names(nn), "\\n(n = ", as.integer(nn), ")"))
+print(ggplot(d, aes(gl, y)) + geom_boxplot(fill = ACC, alpha = .35, colour = "grey30") +
+  stat_summary(fun = mean, geom = "point", shape = 23, size = 3, fill = "white", colour = "black") +
+  theme_minimal(base_size = 13) +
+  labs(x = grp_name, y = resp_name, title = paste0("Boxplots of ", resp_name, " by ", grp_name, " (diamond = mean)")))
+list(lv = lv, ns = ns, ms = ms, ss = ss, k = k, qq = qq_drawn,
      f = Fv, df1 = df1, df2 = df2, p = pv, om = om, oml = om_lo, omu = om_hi,
      gi = gi, gj = gj, gd = gd, glo = glo, ghi = ghi, gt = gt, gdf = gdf, gp = gp, gse = gse,
      eg = eg, egl = egl, egu = egu)`,
     async run({env, cols, active, used, dropped}){
       document.getElementById('edaOut').classList.add('hidden');
       if(!installed.has('WAnova')){ setStatus('Installing WAnova (one-time download)…',{busy:true}); await webR.installPackages(['WAnova']); installed.add('WAnova'); }
+      if(!ggReady){ setStatus('Installing the plotting library (one-time download)…',{busy:true}); await webR.installPackages(['ggplot2']); ggReady=true; }
       setStatus('Running in R…',{busy:true});
       const shelter = await new webR.Shelter();
       try{
-        const cap = await shelter.captureR(this.rProgram, { env });
+        const cap = await shelter.captureR(this.rProgram, { env, captureGraphics:{ width:820, height:460 } });
         const consoleText = cap.output.filter(o=>o.type==='stdout'||o.type==='stderr').map(o=>o.data).join('\n');
         const R = rlistToObj(await cap.result.toJs());
         const grp=cols.grp, resp=cols.resp, ci=pct(env.conf);
@@ -2279,8 +2304,11 @@ list(lv = lv, ns = ns, ms = ms, ss = ss, k = k,
           plain: `${main.plain}\n\n${t2.plain}`,
           htmlTable: main.copyHtml + '<br>' + t2.copyHtml
         };
+        const plotCaps = (R.qq && R.qq[0]===1 ? ['Normal Q-Q of residuals (each residual divided by its group SD)'] : [])
+          .concat([`Boxplots of ${resp} by ${grp} (diamond = group mean)`]);
+        renderPlotsInto(cap.images || [], plotCaps);
         document.getElementById('outStep').classList.remove('hidden');
-        const methodNote = `<b>Why these methods.</b> Welch's <i>F</i> is the default because the classical <i>F</i> is not robust to unequal variances and pretesting them does not help (Delacre, Leys, Mora &amp; Lakens, 2019). Games-Howell is the matching post hoc under unequal variances and <i>n</i>'s (Games &amp; Howell, 1976; Sauder &amp; DeMars, 2019), and it runs unconditionally: it controls the familywise error rate on its own, so it needs no significant omnibus <i>F</i> first (Bernhardson, 1975; Hayter, 1986). Adjusted \u03C9\u00B2 (Albers &amp; Lakens, 2018) incorporates Welch's corrected df. At &alpha; = ${aTxt} the \u03C9\u00B2 interval is shown as a ${ciPct}% CI: because the <i>F</i> test is one-sided, a ${ciPct}% two-sided interval corresponds to the test at &alpha; = ${aTxt} (Steiger, 2004; Lakens, 2013). The \u03C9\u00B2 interval inverts a noncentral <i>F</i> on Welch df, exact under equal variances and an accepted approximation otherwise. Each comparison also reports Hedges' <i>g*</i><sub>s</sub>, computed exactly as in the two-sample module (non-pooled standardizer, small-sample correction, noncentral-<i>t</i> interval; Delacre et al., 2021), so it matches running that pair on its own. Its interval is deliberately unadjusted: it estimates the size of that one difference rather than supporting a joint decision, and the familywise decision is already made by the Games-Howell <i>p</i>-values and simultaneous intervals. Read the <i>g*</i><sub>s</sub> interval as a per-comparison estimate; an interval that excludes zero next to a nonsignificant Games-Howell <i>p</i>-value is the multiplicity adjustment made visible, not a contradiction.`;
+        const methodNote = `<b>Why these methods.</b> Welch's <i>F</i> is the default because the classical <i>F</i> is not robust to unequal variances and pretesting them does not help (Delacre, Leys, Mora &amp; Lakens, 2019). Games-Howell is the matching post hoc under unequal variances and <i>n</i>'s (Games &amp; Howell, 1976; Sauder &amp; DeMars, 2019), and it runs unconditionally: it controls the familywise error rate on its own, so it needs no significant omnibus <i>F</i> first (Bernhardson, 1975; Hayter, 1986). Adjusted \u03C9\u00B2 (Albers &amp; Lakens, 2018) incorporates Welch's corrected df. At &alpha; = ${aTxt} the \u03C9\u00B2 interval is shown as a ${ciPct}% CI: because the <i>F</i> test is one-sided, a ${ciPct}% two-sided interval corresponds to the test at &alpha; = ${aTxt} (Steiger, 2004; Lakens, 2013). The \u03C9\u00B2 interval inverts a noncentral <i>F</i> on Welch df, exact under equal variances and an accepted approximation otherwise. Each comparison also reports Hedges' <i>g*</i><sub>s</sub>, computed exactly as in the two-sample module (non-pooled standardizer, small-sample correction, noncentral-<i>t</i> interval; Delacre et al., 2021), so it matches running that pair on its own. Its interval is deliberately unadjusted: it estimates the size of that one difference rather than supporting a joint decision, and the familywise decision is already made by the Games-Howell <i>p</i>-values and simultaneous intervals. Read the <i>g*</i><sub>s</sub> interval as a per-comparison estimate; an interval that excludes zero next to a nonsignificant Games-Howell <i>p</i>-value is the multiplicity adjustment made visible, not a contradiction. <b>Checking normality.</b> The assumption concerns the residuals (each value minus its group mean), not the raw outcome, so the Q-Q plot pools the residuals from every group into one plot, which has far more points than a separate plot per group. Each residual is divided by its own group's <i>SD</i> so that unequal spreads, which Welch's test already allows, do not masquerade as heavy tails; the plot then checks only the shape. Points close to the line support normality; curvature at the ends suggests skewness, an S-shape suggests heavy or light tails, and isolated points far from the line are possible outliers. The boxplots show each group's center, spread, skewness, and outliers, which pooling can hide. With moderate to large groups Welch's <i>F</i> tolerates mild non-normality well.`;
         const mn=document.getElementById('methodNote'); mn.innerHTML=methodNote; mn.classList.remove('hidden');
         setStatus(`Done. ${used} rows used${dropped?`, ${dropped} dropped for missing values`:''}.`);
       } finally { await shelter.purge(); }
