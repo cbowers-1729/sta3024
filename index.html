@@ -103,6 +103,12 @@
         border-radius:5px; padding:3px 10px; cursor:pointer}
   .copy:hover{background:var(--accent-soft)}
   .hidden{display:none}
+  /* Output that no longer matches the inputs: dimmed, with a notice, until Run is pressed again. */
+  .stale > *{opacity:.4}
+  .stale .copy{pointer-events:none}
+  .stale::before{content:"These results were produced with earlier settings. Press the Run button again to update them.";
+    display:block; margin:0 0 12px; padding:9px 12px; border-left:3px solid var(--warn); background:#fbeee8;
+    color:var(--warn); font-size:13.5px; font-weight:600; border-radius:0 6px 6px 0}
   .hint{font-size:12.5px; color:var(--ink-soft); margin-top:8px}
   .rolewarn{font-size:12.5px; color:var(--warn); margin-top:8px; min-height:16px}
   footer{margin-top:40px; padding-top:18px; border-top:1px solid var(--rule); font-size:12.5px; color:var(--ink-soft)}
@@ -177,7 +183,7 @@
         <option value="less">One-sided: less (left-tailed)</option>
         <option value="greater">One-sided: greater (right-tailed)</option>
       </select>
-      <div class="hint" style="margin-top:6px">The direction refers to the first-listed group or the test value (see the R console for R's exact statement). With a one-sided alternative, every interval, effect sizes included, is reported as a two-sided interval at 1 &minus; 2&alpha; (90% at &alpha; = .05), which reaches the same decision as the one-sided test (Lakens, Scheel &amp; Isager, 2018).</div>
+      <div class="hint" style="margin-top:6px">&ldquo;Greater&rdquo; means the first group (or the first column) tends to be higher than the second, or the parameter is above the test value; &ldquo;less&rdquo; is the reverse (the R console gives R's exact statement). With a one-sided alternative, every interval, effect sizes included, is reported as a two-sided interval at 1 &minus; 2&alpha; (90% at &alpha; = .05), the level matched to the one-sided test (Lakens, Scheel &amp; Isager, 2018).</div>
     </div>
     <div class="rolewarn" id="roleWarn"></div>
     <div class="run"><button class="run-btn" id="runBtn" disabled>Run analysis</button></div>
@@ -305,6 +311,10 @@ import { WebR } from 'https://webr.r-wasm.org/v0.6.0/webr.mjs';
 // when it cannot (nz).
 // MINUS: set to '\u2212' for a typographic minus sign in the copied output.
 const MINUS = '-';
+// Column names and category labels come from the user's file. Anything put into the
+// page as HTML goes through esc(), so a label such as "<HS" shows as typed instead of
+// being read as a tag.
+const esc = s => String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 const noNegZero = s => /^-0(\.0*)?$/.test(s) ? s.slice(1) : s;   // never print -0.00
 
 // Flags raised while a table is being formatted. They are advice to the person
@@ -322,6 +332,11 @@ function setAPA(html){
 }
 
 const DIG_MIN = 2, DIG_MAX = 8, DIG_FLAG = 4;
+// Decimals needed to show `sig` significant digits of x, never fewer than two. Used
+// where no standard error is available to set the precision (sums of squares, mean
+// squares, the residual standard error).
+const sigDec = (x, sig = 3) => (isNum(x) && Number(x) !== 0)
+  ? Math.max(DIG_MIN, Math.min(DIG_MAX, sig - 1 - Math.floor(Math.log10(Math.abs(Number(x)))))) : DIG_MIN;
 // Two significant digits on the SE, i.e. 1 - floor(log10(SE)) decimals. Given
 // several SEs for one column, the smallest wins, so the most precisely estimated
 // row in the column is never under-reported. Floored at APA's default two decimals
@@ -382,6 +397,8 @@ const nz = (x, d=2) => fmtNum(x, d, false);
 const fdf = (x)=>{ if(!isNum(x)){ naFlag(); return NA_TXT; } const v=Number(x);
   return Math.abs(v-Math.round(v)) < 1e-8 ? String(Math.round(v)) : v.toFixed(2); };
 const pct = (c)=> Math.round(Number(c)*100)+'%';
+// A level that is not a whole percent (a Bonferroni per-interval level such as 99.5%).
+const pctFine = (c)=> String(+(Number(c)*100).toFixed(2))+'%';
 const pFmt = p => !isNum(p) ? (naFlag(), '= ' + NA_TXT) : p < .001 ? '< .001' : '= ' + nz(p,3);
 // p-value for a table cell (no leading "=").
 const pCell = p => !isNum(p) ? (naFlag(), NA_TXT) : p < .001 ? '< .001' : nz(p,3);
@@ -508,7 +525,10 @@ function multOn(env){ return Number(env && env.bonf) === 1; }
 // with the Copy table button instead of living only on screen.
 const sub2 = t => `<div style="margin-top:22px">${t.screenHtml}</div>`;
 const paraCopy = html => `<p style="font-family:'Times New Roman',serif;font-size:11pt;margin:8pt 0 0;">${html}</p>`;
-function multBits(on, m, ci){
+// exact = false for modules whose p-values and intervals come from different methods
+// (pairwise proportions: z test and Newcombe interval), where agreement is usual but
+// not guaranteed.
+function multBits(on, m, ci, exact = true){
   const pHead   = on ? 'Bonferroni' : 'Holm';
   const capCI   = on ? `${ci} simultaneous CIs` : `${ci} unadjusted CIs`;
   const methHtml = on
@@ -518,10 +538,14 @@ function multBits(on, m, ci){
     ? `${m} comparisons: Bonferroni-adjusted p-values; ${ci} single-step Bonferroni simultaneous CIs.`
     : `${m} comparisons: Holm-adjusted p-values; ${ci} unadjusted per-comparison CIs.`;
   const footHtml = on
-    ? `<i>Note.</i> The <i>p</i>-values and the intervals carry the same single-step Bonferroni adjustment, so all ${m} intervals hold jointly at ${ci} and test and interval agree by construction.`
+    ? (exact
+      ? `<i>Note.</i> The <i>p</i>-values and the intervals carry the same single-step Bonferroni adjustment, so all ${m} intervals hold jointly at ${ci} and test and interval agree by construction.`
+      : `<i>Note.</i> The <i>p</i>-values and the intervals carry the same single-step Bonferroni adjustment, so all ${m} intervals hold jointly at ${ci}. The <i>p</i>-values come from the <i>z</i> test and the intervals from the Newcombe method, so the two nearly always agree but can differ when an adjusted <i>p</i>-value is very close to the significance level.`)
     : `<i>Note.</i> Each interval controls only per-comparison coverage while the <i>p</i>-value controls the familywise error rate across all ${m} comparisons, so the two can disagree; that disagreement is the visible effect of the multiplicity adjustment.`;
   const footPlain = on
-    ? `Note. The p-values and the intervals carry the same single-step Bonferroni adjustment, so all ${m} intervals hold jointly at ${ci} and test and interval agree by construction.`
+    ? (exact
+      ? `Note. The p-values and the intervals carry the same single-step Bonferroni adjustment, so all ${m} intervals hold jointly at ${ci} and test and interval agree by construction.`
+      : `Note. The p-values and the intervals carry the same single-step Bonferroni adjustment, so all ${m} intervals hold jointly at ${ci}. The p-values come from the z test and the intervals from the Newcombe method, so the two nearly always agree but can differ when an adjusted p-value is very close to the significance level.`)
     : `Note. Each interval controls only per-comparison coverage while the p-value controls the familywise error rate across all ${m} comparisons, so the two can disagree; that disagreement is the visible effect of the multiplicity adjustment.`;
   const footScreen = `<p class="note" style="margin-top:8px">${footHtml}</p>`;
   const footCopy   = `<p style="font-family:'Times New Roman',serif;font-size:11pt;margin:6pt 0 0;">${footHtml}</p>`;
@@ -892,19 +916,35 @@ c(t=t.obs, df=df, p=tt$p.value, md=md, cil=tt$conf.int[1], ciu=tt$conf.int[2],
 
   brunner: {
     label: "Two Independent groups, rank-based — Brunner-Munzel test",
-    dropHint: "Long/tidy data: a numeric outcome column and a 2-level grouping column.",
-    methodNote: "<b>Why this test.</b> Brunner-Munzel is preferred over the Wilcoxon-Mann-Whitney test: MW's equal-distribution assumption fails under unequal spread or shape, where Brunner-Munzel keeps Type I error controlled with comparable power (Karch, 2021). It tests stochastic dominance, whether scores in one group tend to exceed the other, not a difference in medians (Divine et al., 2018).",
+    dropHint: "Long/tidy data: a numeric outcome column and a 2-level grouping column. Then choose the first group (the group the relative effect is stated for).",
+    methodNote: "<b>Why this test.</b> Brunner-Munzel is preferred over the Wilcoxon-Mann-Whitney test: MW's equal-distribution assumption fails under unequal spread or shape, where Brunner-Munzel keeps Type I error controlled with comparable power (Karch, 2021). It tests stochastic dominance, whether scores in one group tend to exceed the other, not a difference in medians (Divine et al., 2018). <b>Setup.</b> The relative effect <i>p&#770;</i> is the estimated probability that a randomly chosen value from the first group exceeds a randomly chosen value from the other group (plus half the probability of a tie), so values above .50 mean the first group tends to be higher. Swapping the groups changes <i>p&#770;</i> to 1 &minus; <i>p&#770;</i> and reverses the sign of the test statistic; the two-sided <i>p</i>-value is unchanged. With a one-sided alternative, &ldquo;greater&rdquo; means the first group tends to be higher, the same direction as in the Welch and median modules. <b>Interval.</b> A relative effect is a probability, so an interval limit that the <i>t</i> approximation puts below 0 or above 1 is set to that boundary; this cannot change whether .50 is inside the interval, so the interval still agrees with the test.",
     roles: [
       { key:'resp', kind:'numeric', label:'Response — numeric outcome' },
       { key:'grp',  kind:'group2',  label:'Group — must have exactly 2 levels' }
     ],
+    params: [
+      { key:'group1', type:'level', fromRole:'grp', required:true, shortLabel:'first group',
+        label:'First group: the relative effect is the probability that a value from this group exceeds a value from the other group' }
+    ],
+    liveHint(cols, pv){
+      const r = cols.resp, g = cols.grp;
+      if(!r || !g || !columns[g]) return '';
+      if(!pv.group1)
+        return 'Choose the first group. It decides which way the relative effect is stated, and so what &ldquo;greater&rdquo; and &ldquo;less&rdquo; mean for a one-sided test.';
+      const g2 = levelsOf(columns[g]).filter(x=>x!==pv.group1)[0] || '';
+      return `Relative effect = probability that a ${esc(r)} from ${esc(pv.group1)} (first group) exceeds a ${esc(r)} from ${esc(g2)}. Above .50 means ${esc(pv.group1)} tends to be higher.`;
+    },
     sided: true,
     defaults: { resp:'bwt', grp:'smoke' },
-    resultKeys: ['stat','df','p','phat','cil','ciu','n1','md1','n2','md2','sep'],
+    resultKeys: ['stat','df','p','phat','cil','ciu','n1','md1','n2','md2','sep','clip'],
     rProgram: `
 d <- data.frame(resp = as.numeric(resp), grp = factor(grp))
-lv <- levels(d$grp)
-x <- d$resp[d$grp == lv[1]]; y <- d$resp[d$grp == lv[2]]
+if (!(group1 %in% levels(d$grp))) stop("The first group must be one of the levels of the group column.")
+# The first group chosen by the user is group 1. Y is the first group and X the other, so
+# the relative effect P(X < Y) + .5*P(X = Y) is the probability that a value from the
+# first group exceeds a value from the other group.
+lv <- c(group1, setdiff(levels(d$grp), group1))
+y <- d$resp[d$grp == lv[1]]; x <- d$resp[d$grp == lv[2]]
 nx <- length(x); ny <- length(y); N <- nx + ny
 rx <- rank(x); ry <- rank(y); r <- rank(c(x, y))
 mx <- mean(r[1:nx]); my <- mean(r[(nx+1):N])
@@ -912,58 +952,67 @@ pst <- (my - (ny+1)/2)/nx
 vx <- sum((r[1:nx] - rx - mx + (nx+1)/2)^2)/(nx-1)
 vy <- sum((r[(nx+1):N] - ry - my + (ny+1)/2)^2)/(ny-1)
 se <- sqrt(vx/(nx*ny^2) + vy/(ny*nx^2))
-stat <- (pst - 0.5)/se
-df <- ((nx*vx + ny*vy)^2)/(((nx*vx)^2)/(nx-1) + ((ny*vy)^2)/(ny-1))
-p <- switch(alt,
-  "less"    = pt(stat, df),
-  "greater" = pt(stat, df, lower.tail = FALSE),
-  2*pt(abs(stat), df, lower.tail = FALSE))
-# Always two-sided: at 1 - alpha for a two-sided test, 1 - 2*alpha for a one-sided one.
-ci <- pst + c(-1,1)*qt(1 - (1-cilev)/2, df)*se
 # Zero standard error: the two samples do not overlap at all (or every value is tied).
 # The statistic, df, p-value and interval are then undefined, not zero.
 sepr <- as.numeric(!is.finite(se) || se <= 0)
-if (sepr == 1) { stat <- NA_real_; df <- NA_real_; p <- NA_real_; ci <- c(NA_real_, NA_real_) }
+clipped <- 0
+if (sepr == 1) {
+  stat <- NA_real_; df <- NA_real_; p <- NA_real_; ci <- c(NA_real_, NA_real_)
+} else {
+  stat <- (pst - 0.5)/se
+  df <- ((nx*vx + ny*vy)^2)/(((nx*vx)^2)/(nx-1) + ((ny*vy)^2)/(ny-1))
+  p <- switch(alt,
+    "less"    = pt(stat, df),
+    "greater" = pt(stat, df, lower.tail = FALSE),
+    2*pt(abs(stat), df, lower.tail = FALSE))
+  # Always two-sided: at 1 - alpha for a two-sided test, 1 - 2*alpha for a one-sided one.
+  ci <- pst + c(-1,1)*qt(1 - (1-cilev)/2, df)*se
+  # A relative effect is a probability. A limit the t approximation puts outside [0, 1]
+  # is set to the boundary; .50 is interior, so this never changes agreement with the test.
+  clipped <- as.numeric(ci[1] < 0 || ci[2] > 1)
+  ci <- pmin(pmax(ci, 0), 1)
+}
 cat("\\n\\tBrunner-Munzel Test\\n\\n")
 cat("data:  resp by grp\\n")
-cat(sprintf("alternative hypothesis: relative effect P(X<Y)+.5*P(X=Y) is %s 0.5\\n",
+cat(sprintf("relative effect: P(%s > %s) + .5*P(tie)\\n", lv[1], lv[2]))
+cat(sprintf("alternative hypothesis: relative effect is %s 0.5\\n",
     switch(alt, "less" = "less than", "greater" = "greater than", "not equal to")))
 cat(sprintf("Brunner-Munzel statistic = %.4f, df = %.3f, p-value = %.5g\\n", stat, df, p))
 cat(sprintf("%.0f percent confidence interval: %.4f %.4f\\n", cilev*100, ci[1], ci[2]))
-cat(sprintf("sample estimate, P(X<Y)+.5*P(X=Y) = %.4f\\n", pst))
-cat(sprintf("\\nGroups: %s vs %s\\n", lv[1], lv[2]))
+cat(sprintf("sample estimate, P(%s > %s) + .5*P(tie) = %.4f\\n", lv[1], lv[2], pst))
+cat(sprintf("\\nGroups: %s (first group) vs %s\\n", lv[1], lv[2]))
+if (clipped == 1)
+  cat("\\nNOTE: an interval limit fell outside the 0 to 1 range of a probability and was\\n",
+      "      set to the boundary.\\n", sep = "")
 if (sepr == 1)
   cat("\\nNOTE: the standard error of the relative effect is zero. Either the two groups do\\n",
       "      not overlap at all (every value in one group is above every value in the\\n",
       "      other) or every value is tied. The test statistic, its df, the p-value and\\n",
       "      the interval are undefined. Report the separation descriptively.\\n", sep = "")
 c(stat=stat, df=df, p=p, phat=pst, cil=ci[1], ciu=ci[2],
-  n1=nx, md1=median(x), n2=ny, md2=median(y), sep=sepr)`,
+  n1=ny, md1=median(y), n2=nx, md2=median(x), sep=sepr, clip=clipped)`,
     render(R, ctx){
-      const [l1,l2]=ctx.levels.grp, grp=ctx.cols.grp, resp=ctx.cols.resp;
-      if(R.sep === 1){
-        const what = R.phat === 0.5 ? 'every value is tied' : `the two groups do not overlap at all: every ${resp} in ${R.phat > 0.5 ? l2 : l1} is above every ${resp} in ${R.phat > 0.5 ? l1 : l2}`;
-        const msg = `Relative effect p-hat = ${nz(R.phat)}. The Brunner-Munzel test and its confidence interval could not be computed because ${what}, so the standard error of the relative effect is zero. Report the separation descriptively. Mdn = median.`;
-        return buildAPA({
-          title:`Descriptive Statistics and Brunner-Munzel Test for ${resp} by ${grp}`,
-          headers:[{t:grp},{t:'n',it:true,num:true},{t:'Mdn',it:true,num:true}],
-          rows:[
-            [{t:l1},{t:R.n1,num:true},{t:f2(R.md1),num:true}],
-            [{t:l2},{t:R.n2,num:true},{t:f2(R.md2),num:true}]
-          ],
-          note:{ html:`<i>Note.</i> ${msg.replace('p-hat','<i>p&#770;</i>')}`, plain:`Note. ${msg}` }
-        });
-      }
-      return buildAPA({
+      // Group order follows the user's choice of first group (the R program applies the same rule).
+      const l1 = ctx.env.group1, l2 = ctx.levels.grp.filter(l=>l!==l1)[0], grp=ctx.cols.grp, resp=ctx.cols.resp;
+      const head = {
         title:`Descriptive Statistics and Brunner-Munzel Test for ${resp} by ${grp}`,
         headers:[{t:grp},{t:'n',it:true,num:true},{t:'Mdn',it:true,num:true}],
         rows:[
           [{t:l1},{t:R.n1,num:true},{t:f2(R.md1),num:true}],
           [{t:l2},{t:R.n2,num:true},{t:f2(R.md2),num:true}]
-        ],
+        ]
+      };
+      if(R.sep === 1){
+        const what = R.phat === 0.5 ? 'every value is tied' : `the two groups do not overlap at all: every ${resp} in ${R.phat > 0.5 ? l1 : l2} is above every ${resp} in ${R.phat > 0.5 ? l2 : l1}`;
+        const msg = `Relative effect p-hat = ${nz(R.phat)}, the estimated probability that a randomly chosen ${resp} from ${l1} exceeds one from ${l2}. The Brunner-Munzel test and its confidence interval could not be computed because ${what}, so the standard error of the relative effect is zero. Report the separation descriptively. Mdn = median.`;
+        return buildAPA({ ...head,
+          note:{ html:`<i>Note.</i> ${msg.replace('p-hat','<i>p&#770;</i>')}`, plain:`Note. ${msg}` } });
+      }
+      const clipTxt = R.clip === 1 ? ' An interval limit that fell outside the 0 to 1 range of a probability was set to the boundary.' : '';
+      return buildAPA({ ...head,
         note:{
-          html:`<i>Note.</i> Brunner-Munzel <i>W</i>(${fdf(R.df)}) = ${f2(R.stat)}, <i>p</i> ${pFmt(R.p)}, ${sidedTxt(ctx.env.alt)}. Relative effect <i>p&#770;</i> = ${nz(R.phat)}, ${pct(ctx.conf)} CI [${nz(R.cil)}, ${nz(R.ciu)}], the estimated probability that a randomly chosen ${resp} from ${l2} exceeds one from ${l1} (.50 indicates no tendency). Mdn = median.`,
-          plain:`Note. Brunner-Munzel W(${fdf(R.df)}) = ${f2(R.stat)}, p ${pFmt(R.p)}, ${sidedTxt(ctx.env.alt)}. Relative effect p-hat = ${nz(R.phat)}, ${pct(ctx.conf)} CI [${nz(R.cil)}, ${nz(R.ciu)}], the estimated probability that a randomly chosen ${resp} from ${l2} exceeds one from ${l1} (.50 indicates no tendency). Mdn = median.`
+          html:`<i>Note.</i> Brunner-Munzel <i>W</i>(${fdf(R.df)}) = ${f2(R.stat)}, <i>p</i> ${pFmt(R.p)}, ${sidedTxt(ctx.env.alt)}. Relative effect <i>p&#770;</i> = ${nz(R.phat)}, ${pct(ctx.conf)} CI [${nz(R.cil)}, ${nz(R.ciu)}], the estimated probability that a randomly chosen ${resp} from ${l1} exceeds one from ${l2} (.50 indicates no tendency).${clipTxt} Mdn = median.`,
+          plain:`Note. Brunner-Munzel W(${fdf(R.df)}) = ${f2(R.stat)}, p ${pFmt(R.p)}, ${sidedTxt(ctx.env.alt)}. Relative effect p-hat = ${nz(R.phat)}, ${pct(ctx.conf)} CI [${nz(R.cil)}, ${nz(R.ciu)}], the estimated probability that a randomly chosen ${resp} from ${l1} exceeds one from ${l2} (.50 indicates no tendency).${clipTxt} Mdn = median.`
         }
       });
     }
@@ -971,28 +1020,45 @@ c(stat=stat, df=df, p=p, phat=pst, cil=ci[1], ciu=ci[2],
 
   ind_medians: {
     label: "Two-sample - Independent medians (smoothed percentile bootstrap)",
-    dropHint: "Long/tidy data: a numeric outcome column and a 2-level grouping column.",
+    dropHint: "Long/tidy data: a numeric outcome column and a 2-level grouping column. Then choose the first group (the group whose median comes first in the difference).",
     sided: true,
-    methodNote: "<b>Why this analysis.</b> This estimates the difference between the two group <i>medians</i>, a location shift in the outcome's own units. It is the right estimand for an interval or ratio outcome when the mean is not the target, as with skewed or bounded clinical and screening scores. The Brunner-Munzel test in this same section answers a different question, stochastic superiority rather than location (Divine et al., 2018). <b>How it is computed.</b> A <b>smoothed percentile bootstrap</b>: each group is resampled 2,000 times, a small amount of kernel noise is added to every resample, and the interval is read off the percentiles of the resulting distribution of median differences (Silverman &amp; Young, 1987). The point estimate is the ordinary difference of sample medians; smoothing affects only the interval. <b>Why smoothed.</b> The bootstrap distribution of a median is atomic, since a resample median can only take values already present in the sample, and when data are recorded on a coarse scale such as whole numbers or a rating scale, that lattice makes several standard methods fail, some of them <i>worse</i> as the sample grows. Kernel smoothing breaks the lattice. In simulation across skewed populations and rounding levels this approach held its coverage where quantile-regression standard errors, Bonett-Price, and BCa did not. <b>The <i>p</i>-value.</b> It is obtained by inverting the interval: it is the level at which the interval would just exclude zero. Test and interval are therefore the same event and cannot contradict each other. A separate distance-from-centre <i>p</i>-value would not guarantee that, because the bootstrap distribution of a median difference is skewed and an equal-tailed interval is a different event. <b>Reproducibility.</b> Resampling uses the seed shown in the setup panel, so the same data and the same seed give identical output; change the seed to see how far the last digits move. <b>Assumptions.</b> Independent observations within and between groups, and a uniquely defined population median in each group. Nothing is assumed about shape, spread, or normality, and the two groups need not share any of them. <b>More than two groups.</b> Use the pairwise median differences module, which runs this same bootstrap with familywise error control.",
+    liveHint(cols, pv){
+      const r = cols.resp, g = cols.grp;
+      if(!r || !g || !columns[g]) return '';
+      if(!pv.group1)
+        return 'Choose the first group. It decides which median comes first, and so the sign of the median difference.';
+      const g2 = levelsOf(columns[g]).filter(x=>x!==pv.group1)[0] || '';
+      return `Median difference = median ${esc(r)} in ${esc(pv.group1)} (first group) − median ${esc(r)} in ${esc(g2)}.`;
+    },
+    methodNote: "<b>Setup.</b> The first group is the group whose median comes first, so the difference reported is the first group minus the other group. Swapping the groups reverses the sign of the difference and of its interval; the two-sided <i>p</i>-value is unchanged. <b>Why this analysis.</b> This estimates the difference between the two group <i>medians</i>, a location shift in the outcome's own units. It is the right estimand for an interval or ratio outcome when the mean is not the target, as with skewed or bounded clinical and screening scores. The Brunner-Munzel test in this same section answers a different question, stochastic superiority rather than location (Divine et al., 2018). <b>How it is computed.</b> A <b>smoothed percentile bootstrap</b>: each group is resampled 2,000 times, a small amount of kernel noise is added to every resample, and the interval is read off the percentiles of the resulting distribution of median differences (Silverman &amp; Young, 1987). The point estimate is the ordinary difference of sample medians; smoothing affects only the interval. <b>Why smoothed.</b> The bootstrap distribution of a median is atomic, since a resample median can only take values already present in the sample, and when data are recorded on a coarse scale such as whole numbers or a rating scale, that lattice makes several standard methods fail, some of them <i>worse</i> as the sample grows. Kernel smoothing breaks the lattice. In simulation across skewed populations and rounding levels this approach held its coverage where quantile-regression standard errors, Bonett-Price, and BCa did not. <b>The <i>p</i>-value.</b> It is obtained by inverting the interval: it is the level at which the interval would just exclude zero. Test and interval are therefore the same event and cannot contradict each other. A separate distance-from-centre <i>p</i>-value would not guarantee that, because the bootstrap distribution of a median difference is skewed and an equal-tailed interval is a different event. <b>Reproducibility.</b> Resampling uses the seed shown in the setup panel, so the same data and the same seed give identical output; change the seed to see how far the last digits move. <b>Assumptions.</b> Independent observations within and between groups, and a uniquely defined population median in each group. Nothing is assumed about shape, spread, or normality, and the two groups need not share any of them. <b>More than two groups.</b> Use the pairwise median differences module, which runs this same bootstrap with familywise error control.",
     roles: [
       { key:'resp', kind:'numeric', label:'Response (numeric outcome)' },
       { key:'grp',  kind:'group2',  label:'Group (must have exactly 2 levels)' }
     ],
     params: [
+      { key:'group1', type:'level', fromRole:'grp', required:true, shortLabel:'first group',
+        label:'First group: the group whose median comes first; the difference reported is the first group minus the other group' },
       { key:'seed', type:'number', label:'Random seed (bootstrap resampling)', default:20260907 }
     ],
     defaults: { resp:'bwt', grp:'smoke' },
     resultKeys: ['est','cil','ciu','p','se','n1','md1','iqr1','n2','md2','iqr2','zw','seedv'],
     rProgram: `
 # Difference between two independent medians by SMOOTHED PERCENTILE BOOTSTRAP.
-# Same engine as the k-group pairwise module, reduced to a single comparison, so
-# on the two-sided default the two return identical numbers for identical data
-# and an identical seed. One-sided alternatives are available only here.
+# Same engine as the k-group pairwise module, reduced to a single comparison.
+# Resampling always runs in alphabetical group order, as it does there, and the
+# difference is then oriented to the user's first group. So with an identical seed
+# the two modules return identical numbers when the first group is the first one
+# alphabetically, and the exact mirror image (signs reversed, limits swapped) when it
+# is the other one. One-sided alternatives are available only here.
 set.seed(as.integer(seed))
 B <- 2000
 
 d <- data.frame(v = as.numeric(resp), g = factor(grp))
-lv <- levels(d$g)
+la <- levels(d$g)                      # alphabetical: the resampling order
+if (!(group1 %in% la)) stop("The first group must be one of the levels of the group column.")
+lv <- c(group1, setdiff(la, group1))   # the user's order: first group, other group
+flip <- lv[1] != la[1]
+xa1 <- d$v[d$g == la[1]]; xa2 <- d$v[d$g == la[2]]; na1 <- length(xa1); na2 <- length(xa2)
 x1 <- d$v[d$g == lv[1]]; x2 <- d$v[d$g == lv[2]]
 n1 <- length(x1); n2 <- length(x2)
 md1 <- median(x1);  md2 <- median(x2)
@@ -1040,10 +1106,11 @@ boot_bw <- function(v) {
 
 # One smoothed bootstrap per group. Kernel noise breaks the lattice that
 # coarsely recorded data imposes on the resampling distribution.
-h1 <- boot_bw(x1); h2 <- boot_bw(x2)
-b1 <- apply(matrix(x1[sample.int(n1, n1*B, replace = TRUE)], nrow = B) + rnorm(n1*B, 0, h1), 1, median)
-b2 <- apply(matrix(x2[sample.int(n2, n2*B, replace = TRUE)], nrow = B) + rnorm(n2*B, 0, h2), 1, median)
-db <- b1 - b2; dbs <- sort(db); se <- sd(db)
+h1 <- boot_bw(xa1); h2 <- boot_bw(xa2)
+b1 <- apply(matrix(xa1[sample.int(na1, na1*B, replace = TRUE)], nrow = B) + rnorm(na1*B, 0, h1), 1, median)
+b2 <- apply(matrix(xa2[sample.int(na2, na2*B, replace = TRUE)], nrow = B) + rnorm(na2*B, 0, h2), 1, median)
+db <- b1 - b2; if (flip) db <- -db     # orient to first group minus other group
+dbs <- sort(db); se <- sd(db)
 
 a0 <- perc_level(dbs, 0)
 # Two-sided is floored the way the k-group module floors it, so the two report
@@ -1089,7 +1156,8 @@ c(est=est, cil=cil, ciu=ciu, p=p, se=se,
   n1=n1, md1=md1, iqr1=iqr1, n2=n2, md2=md2, iqr2=iqr2,
   zw=zw, seedv=as.integer(seed))`,
     render(R, ctx){
-      const [l1,l2]=ctx.levels.grp, grp=ctx.cols.grp, resp=ctx.cols.resp, ci=pct(ctx.conf);
+      // Group order follows the user's choice of first group (the R program applies the same rule).
+      const l1 = ctx.env.group1, l2 = ctx.levels.grp.filter(l=>l!==l1)[0], grp=ctx.cols.grp, resp=ctx.cols.resp, ci=pct(ctx.conf);
       // The bootstrap SE of the difference is the only precision yardstick here, and
       // the descriptives are in the same units, so one precision governs both.
       const D = seDigits(R.se);
@@ -1163,7 +1231,7 @@ c(t=t.obs, df=df, p=tt$p.value, m=m, s=s, n=n, mu0=mu0,
     scaledEffectCI: true,
     label: "Chi-square test of independence/homogeneity (+ Cramér's V)",
     dropHint: "Two categorical columns. If your data is pre-aggregated (one row per cell with a frequency), also pick the counts column.",
-    methodNote: "<b>Why these statistics.</b> Cram\u00E9r's <i>V</i> uses the bias-corrected (Bergsma) adjustment. It is shown with a 90% CI: because the \u03C7\u00B2 test is one-sided, a 90% two-sided interval corresponds to the 95% test (Steiger, 2004; Lakens, 2013). Standardized residuals are compared with a Bonferroni cutoff, \u03A6<sup>\u22121</sup>(1 \u2212 \u03B1 / (2<i>m</i>)), where <i>m</i> is the number of distinct comparisons: 1 for a 2 \u00D7 2 table, the larger dimension when one dimension is 2 and the other is more than 2, and the number of cells otherwise.",
+    methodNote: "<b>Why these statistics.</b> Cram\u00E9r's <i>V</i> uses the bias-corrected (Bergsma) adjustment. It is shown with a 90% CI, the level matched to a one-sided test at \u03B1 = .05 (Steiger, 2004; Lakens, 2013). The bias correction is applied to the interval limits as well as to the estimate, so the lower limit can be .00 even when the \u03C7\u00B2 test is significant. That is not a contradiction: the test asks whether there is any association at all, while the corrected <i>V</i> first removes the association that sampling error alone is expected to produce. Standardized residuals are compared with a Bonferroni cutoff, \u03A6<sup>\u22121</sup>(1 \u2212 \u03B1 / (2<i>m</i>)), where <i>m</i> is the number of distinct comparisons: 1 for a 2 \u00D7 2 table, the larger dimension when one dimension is 2 and the other is more than 2, and the number of cells otherwise.",
     roles: [
       { key:'row',    kind:'categorical', label:'Row variable — categorical' },
       { key:'col',    kind:'categorical', label:'Column variable — categorical' },
@@ -1218,6 +1286,10 @@ list(chi2 = unname(ct$statistic), df = unname(ct$parameter), p = ct$p.value,
           html:`<i>Note.</i> \u03C7\u00B2(${R.df[0]}, <i>N</i> = ${R.N[0]}) = ${f2(R.chi2[0])}, <i>p</i> ${pFmt(R.p[0])}. Cram\u00E9r's <i>V</i> (bias-corrected) = ${nz(R.V[0])}, ${ciPct}% CI [${nz(R.cil[0])}, ${nz(R.ciu[0])}].${warnH}`,
           plain:`Note. chi-square(${R.df[0]}, N = ${R.N[0]}) = ${f2(R.chi2[0])}, p ${pFmt(R.p[0])}. Cramer's V (bias-corrected) = ${nz(R.V[0])}, ${ciPct}% CI [${nz(R.cil[0])}, ${nz(R.ciu[0])}].${warnP}`
         };
+        if(isNum(R.p[0]) && R.p[0] < env.siglev && isNum(R.cil[0]) && R.cil[0] < 0.005){
+          const vz = ` The lower limit of the interval is .00 although the test is significant because the bias correction is applied to the interval as well as to the estimate.`;
+          note.html += vz; note.plain += vz;
+        }
         { const pn = pctNote(pc); note.html += pn; note.plain += pn; }
         const main = buildAPA({ title:`Contingency Table and Chi-Square Test of ${rowName} by ${colName}`, headers, rows, note });
         // Table 2: expected counts under independence/homogeneity, E = (row total x column total) / N.
@@ -1262,7 +1334,7 @@ list(chi2 = unname(ct$statistic), df = unname(ct$parameter), p = ct$p.value,
         };
         document.getElementById('outStep').classList.remove('hidden');
         const aTxt = nz(env.siglev, 2);
-        const methodNote = `<b>Cram\u00E9r's <i>V</i> and its interval.</b> Cram\u00E9r's <i>V</i> uses the bias-corrected (Bergsma) adjustment. At &alpha; = ${aTxt} it is shown as a ${ciPct}% CI: because the \u03C7\u00B2 test is one-sided, a ${ciPct}% two-sided interval corresponds to the test at &alpha; = ${aTxt} (Steiger, 2004; Lakens, 2013). Standardized residuals are compared with a Bonferroni cutoff, \u03A6<sup>\u22121</sup>(1 \u2212 \u03B1 / (2<i>m</i>)), where <i>m</i> is the number of distinct comparisons: 1 for a 2 \u00D7 2 table, the larger dimension when one dimension is 2 and the other is more than 2, and the number of cells otherwise.`;
+        const methodNote = `<b>Cram\u00E9r's <i>V</i> and its interval.</b> Cram\u00E9r's <i>V</i> uses the bias-corrected (Bergsma) adjustment. At &alpha; = ${aTxt} it is shown as a ${ciPct}% CI, the level matched to a one-sided test at &alpha; = ${aTxt} (Steiger, 2004; Lakens, 2013). The bias correction is applied to the interval limits as well as to the estimate, so the lower limit can be .00 even when the \u03C7\u00B2 test is significant. That is not a contradiction: the test asks whether there is any association at all, while the corrected <i>V</i> first removes the association that sampling error alone is expected to produce. Standardized residuals are compared with a Bonferroni cutoff, \u03A6<sup>\u22121</sup>(1 \u2212 \u03B1 / (2<i>m</i>)), where <i>m</i> is the number of distinct comparisons: 1 for a 2 \u00D7 2 table, the larger dimension when one dimension is 2 and the other is more than 2, and the number of cells otherwise.`;
         const mn=document.getElementById('methodNote'); mn.innerHTML=methodNote; mn.classList.remove('hidden');
         setStatus(`Done. ${used} rows used${dropped?`, ${dropped} dropped for missing values`:''}.`);
       } finally { await shelter.purge(); }
@@ -1603,6 +1675,7 @@ c(ok=ok, n=n, med=med, q1=qq[1], q3=qq[2], iqr=qq[2]-qq[1], mn=x[1], mx=x[n],
 
   twoprop: {
     label: "Two-sample - Independent proportions (Newcombe CI + Cohen's h, RR, OR)",
+    ciNotExact: true,
     dropHint: "A 2-level outcome column and a 2-level grouping column. If pre-aggregated, also pick the counts column. Then choose the success category (column 1 of the table) and the first group (row 1, p₁).",
     methodNote: "<b>Setup.</b> The two choices below the column pickers define the 2×2 table: the success category is column 1 and the first group is row 1, so <i>p&#770;</i>₁ is the proportion of successes in the first group and <i>p&#770;</i>₂ is the proportion in the other group. Swapping the groups reverses the sign of the difference, <i>z</i>, and <i>h</i> and inverts RR and OR; the <i>p</i>-value is unchanged. Choosing the other outcome level as the success category analyzes the complementary proportions: the difference, <i>z</i>, and <i>h</i> reverse sign, OR is inverted, and RR becomes the risk ratio for the other outcome. <b>Effect sizes and intervals.</b> The difference in proportions uses the Newcombe hybrid-score interval (Method 10), which keeps good coverage at any <i>n</i>, unlike the Wald interval (Newcombe, 1998). Cohen's <i>h</i> is the arcsine difference 2\u00B7arcsin\u221A<i>p&#770;</i>\u2081 \u2212 2\u00B7arcsin\u221A<i>p&#770;</i>\u2082. The risk ratio and odds ratio use Wald log intervals (the standard log-transform method, e.g. <i>epitools</i>' <code>method='wald'</code>). If any 2\u00D72 cell count is zero, a Haldane\u2013Anscombe correction (+0.5 to each cell) is applied to RR and OR so they stay defined (Haldane, 1956; Anscombe, 1956). All proportion effect sizes stay at the full confidence level.",
     roles: [
@@ -1822,7 +1895,7 @@ list(lv = lv, xs = xs, ns = ns, ps = ps, k = k, m = m,
         const R = rlistToObj(await cap.result.toJs());
         const grp=cols.grp, outcome=cols.outcome, success=env.success, ci=pct(env.conf);
         const k=R.k[0], m=R.m[0], lv=R.lv;
-        const MB = multBits(multOn(env), m, ci);
+        const MB = multBits(multOn(env), m, ci, false);
         const pcell = pCell;
         // Precision from sqrt(p(1-p)/n): the group column from the smallest group SE,
         // the difference column from the smallest SE of a pairwise difference.
@@ -1871,7 +1944,7 @@ list(lv = lv, xs = xs, ns = ns, ps = ps, k = k, m = m,
         };
         document.getElementById('outStep').classList.remove('hidden');
         const mLead = multOn(env)
-          ? `Both the tests and the intervals carry the same single-step Bonferroni adjustment here: each <i>p</i>-value is multiplied by ${m}, and each interval is computed at the Bonferroni per-interval level so that all ${m} intervals hold jointly at ${pct(env.conf)}. Test and interval then agree by construction, at the cost of power and interval width. Unticking the box returns the default, which pairs Holm-adjusted <i>p</i>-values with unadjusted per-comparison intervals.`
+          ? `Both the tests and the intervals carry the same single-step Bonferroni adjustment here: each <i>p</i>-value is multiplied by ${m}, and each interval is computed at the Bonferroni per-interval level so that all ${m} intervals hold jointly at ${pct(env.conf)}. Test and interval then nearly always agree, at the cost of power and interval width; they come from different methods (the <i>z</i> test and the Newcombe interval), so a borderline case can differ. Unticking the box returns the default, which pairs Holm-adjusted <i>p</i>-values with unadjusted per-comparison intervals.`
           : `The intervals are unadjusted, so each one covers its own difference with probability ${pct(env.conf)} and describes the size of that single difference on its own terms. Testing uses Holm-adjusted <i>p</i>-values, which control the familywise error rate across all ${m} comparisons and are uniformly more powerful than Bonferroni (Holm, 1979). The interval and the test therefore answer different questions and can disagree: an interval that excludes zero next to a nonsignificant Holm <i>p</i>-value is the multiplicity adjustment made visible, not a contradiction. Ticking the Bonferroni box puts both on one single-step footing, so that all ${m} intervals hold jointly at ${pct(env.conf)}.`;
         const methodNote = `<b>Why these methods.</b> Each pairwise difference uses the Newcombe hybrid-score interval, which keeps good coverage at any <i>n</i> (Newcombe, 1998). ${mLead} The <b>omnibus</b> \u03C7\u00B2 test of homogeneity tests <i>H</i>\u2080: all ${k} group proportions are equal, the joint version of the pairwise nulls, on the same scale. It is reported as a subordinate, <i>non-gating</i> summary: the pairwise comparisons control their own error rate and are read directly, never conditioned on the omnibus. Because both are framed on the proportions, they can disagree: a significant \u03C7\u00B2 with no single significant pair signals a difference spread diffusely across groups; that is informative.`;
         const mn=document.getElementById('methodNote'); mn.innerHTML=methodNote; mn.classList.remove('hidden');
@@ -2001,8 +2074,11 @@ c(b0=co[1,1], b0se=co[1,2], b0t=co[1,3], b0p=co[1,4], b0l=ci[1,1], b0u=ci[1,2],
       const x0 = ctx.env.x0;
       let predH='', predP='';
       if(Number.isFinite(R.px)){
-        predH = ` Predicted at ${pred} = ${x0}: fitted ${resp} = ${f2(R.px)}, ${ci} confidence interval for the mean [${f2(R.pcl)}, ${f2(R.pcu)}], ${ci} prediction interval for a new observation [${f2(R.ppl)}, ${f2(R.ppu)}].`;
-        predP = ` Predicted at ${pred} = ${x0}: fitted ${resp} = ${f2(R.px)}, ${ci} confidence interval for the mean [${f2(R.pcl)}, ${f2(R.pcu)}], ${ci} prediction interval for a new observation [${f2(R.ppl)}, ${f2(R.ppu)}].`;
+        // Precision from the standard error of the fitted mean (about a quarter of the
+        // width of its interval), like every other quantity in the outcome's units.
+        const Dp = seDigits((R.pcu - R.pcl)/4);
+        predH = ` Predicted at ${pred} = ${x0}: fitted ${resp} = ${f2(R.px,Dp)}, ${ci} confidence interval for the mean [${f2(R.pcl,Dp)}, ${f2(R.pcu,Dp)}], ${ci} prediction interval for a new observation [${f2(R.ppl,Dp)}, ${f2(R.ppu,Dp)}].`;
+        predP = predH;
       }
       const t1 = buildAPA({
         title:`Simple Linear Regression: ${resp} predicted from ${pred}`,
@@ -2016,22 +2092,26 @@ c(b0=co[1,1], b0se=co[1,2], b0t=co[1,3], b0p=co[1,4], b0l=ci[1,1], b0u=ci[1,2],
           plain:`Note. Overall model: F(${R.df1}, ${R.df2}) = ${f2(R.f)}, p ${pFmt(R.fp)}. R^2 = ${nz(R.r2)}, adjusted R^2 = ${nz(R.adjr2)}. Pearson r = ${nz(R.r)}, ${ci} CI [${nz(R.rl)}, ${nz(R.ru)}] (Fisher z). n = ${R.n}.${predP}`
         }
       });
-      // Table 2: analysis of variance. SS and MS are in squared outcome units, so they
-      // stay at two decimals; s (the residual standard error) is in the outcome's units.
+      // Table 2: analysis of variance. SS and MS are in squared outcome units and have no
+      // standard error of their own, so the column shows three significant digits of the
+      // smallest entry (MS residual), never fewer than two decimals. With a small-scale
+      // outcome two fixed decimals would print MS residual = 0.009 as 0.01, and F could
+      // not be reproduced from the table.
       const ssto = R.ssr + R.sse, msr = R.ssr / R.df1, mse = R.sse / R.df2, sRes = Math.sqrt(mse);
+      const Dss = sigDec(mse), Ds = sigDec(sRes);
       const blank = {t:'',num:true};
       const t2 = buildAPA({
         num:2,
         title:`Analysis of Variance for the Regression of ${resp} on ${pred}`,
         headers:[{t:'Source'},{t:'SS',it:true,num:true},{t:'df',it:true,num:true},{t:'MS',it:true,num:true},{t:'F',it:true,num:true},{t:'p',it:true,num:true}],
         rows:[
-          [{t:'Regression'},{t:f2(R.ssr),num:true},{t:R.df1,num:true},{t:f2(msr),num:true},{t:f2(R.f),num:true},{t:pc(R.fp),num:true}],
-          [{t:'Residual'},{t:f2(R.sse),num:true},{t:R.df2,num:true},{t:f2(mse),num:true},blank,blank],
-          [{t:'Total'},{t:f2(ssto),num:true},{t:R.n-1,num:true},blank,blank,blank]
+          [{t:'Regression'},{t:f2(R.ssr,Dss),num:true},{t:R.df1,num:true},{t:f2(msr,Dss),num:true},{t:f2(R.f),num:true},{t:pc(R.fp),num:true}],
+          [{t:'Residual'},{t:f2(R.sse,Dss),num:true},{t:R.df2,num:true},{t:f2(mse,Dss),num:true},blank,blank],
+          [{t:'Total'},{t:f2(ssto,Dss),num:true},{t:R.n-1,num:true},blank,blank,blank]
         ],
         note:{
-          html:`<i>Note.</i> SS = sum of squares; MS = mean square (SS divided by <i>df</i>). <i>R</i><sup>2</sup> = SS<sub>Regression</sub> / SS<sub>Total</sub> = ${nz(R.r2)}. The residual standard error is <i>s</i> = \u221AMS<sub>Residual</sub> = ${f2(sRes)}.`,
-          plain:`Note. SS = sum of squares; MS = mean square (SS divided by df). R^2 = SS(Regression) / SS(Total) = ${nz(R.r2)}. The residual standard error is s = sqrt(MS(Residual)) = ${f2(sRes)}.`
+          html:`<i>Note.</i> SS = sum of squares; MS = mean square (SS divided by <i>df</i>). <i>R</i><sup>2</sup> = SS<sub>Regression</sub> / SS<sub>Total</sub> = ${nz(R.r2)}. The residual standard error is <i>s</i> = \u221AMS<sub>Residual</sub> = ${f2(sRes,Ds)}.`,
+          plain:`Note. SS = sum of squares; MS = mean square (SS divided by df). R^2 = SS(Regression) / SS(Total) = ${nz(R.r2)}. The residual standard error is s = sqrt(MS(Residual)) = ${f2(sRes,Ds)}.`
         }
       });
       // Table 3: influence of single observations (Cook's D > 4/n, or a change in the
@@ -2625,7 +2705,7 @@ list(lv = lv, ns = ns, mds = mds, k = k, m = m, se = se,
         const mLead = (m === 1)
           ? `With two groups there is a single comparison, so there is nothing to adjust for and the multiplicity control is hidden. The interval and the <i>p</i>-value describe the same difference at the same level and agree by construction.`
           : (multOn(env)
-          ? `<b>What the box does.</b> Ticked, the <i>p</i>-values and the intervals carry the same single-step Bonferroni adjustment. Each interval is computed at the ${pct(1-(1-env.conf)/m)} level rather than ${pct(env.conf)}, so the ${m} of them hold <i>jointly</i> at ${pct(env.conf)}: across repeated samples, all ${m} intervals contain their true differences about ${pct(env.conf)} of the time. Because the same adjustment is applied to both, an adjusted <i>p</i>-value below .05 always corresponds to an interval excluding zero, and the two cannot disagree. The cost is width: each interval is wider than a ${pct(env.conf)} interval for one comparison on its own, and that width is the price of the joint claim. Unticking returns the default, Holm-adjusted <i>p</i>-values with unadjusted per-comparison intervals.`
+          ? `<b>What the box does.</b> Ticked, the <i>p</i>-values and the intervals carry the same single-step Bonferroni adjustment. Each interval is computed at the ${pctFine(1-(1-env.conf)/m)} level rather than ${pct(env.conf)}, so the ${m} of them hold <i>jointly</i> at ${pct(env.conf)}: across repeated samples, all ${m} intervals contain their true differences about ${pct(env.conf)} of the time. Because the same adjustment is applied to both, an adjusted <i>p</i>-value below ${nz(env.siglev,2)} always corresponds to an interval excluding zero, and the two cannot disagree. The cost is width: each interval is wider than a ${pct(env.conf)} interval for one comparison on its own, and that width is the price of the joint claim. Unticking returns the default, Holm-adjusted <i>p</i>-values with unadjusted per-comparison intervals.`
           : `<b>What the box does.</b> Unticked (the default), the <i>p</i>-values are Holm-adjusted across all ${m} comparisons and control the familywise error rate, while each interval is an unadjusted ${pct(env.conf)} interval for its own comparison and carries no joint claim. Holm is at least as powerful as Bonferroni (Holm, 1979), but it has no matching simultaneous interval, which is why the intervals stay per-comparison. So an interval may exclude zero while the adjusted <i>p</i>-value does not reject: that comparison would have been significant on its own but does not survive the correction for multiplicity. Ticking the box puts both on one single-step Bonferroni footing, so all ${m} intervals hold jointly at ${pct(env.conf)} and test and interval agree by construction.`);
         const kWarn = (k > 5)
           ? ` <b>Number of groups.</b> The simulation evidence behind this module covers 2 to 5 groups; you have ${k}, giving ${m} comparisons. The method is not expected to break, but its familywise behaviour at this ${k} has not been checked directly and the intervals widen quickly. The module accepts at most 10 groups.`
@@ -2800,9 +2880,18 @@ if (bonf_on) {
 } else {
   cat(sprintf("%d comparisons; Holm-adjusted p-values (familywise); %.0f%% unadjusted per-comparison CIs\\n\\n", m, conf*100))
 }
-gi <- c(); gj <- c(); est <- c(); lo <- c(); hi <- c(); tv <- c(); pr <- c(); failpair <- c()
+gi <- c(); gj <- c(); est <- c(); lo <- c(); hi <- c(); tv <- c(); pr <- c(); failpair <- c(); nclip <- 0
 for (i in 1:(k-1)) for (j in (i+1):k) {
   sub <- droplevels(d[d$g %in% c(lv[i], lv[j]), ])
+  # Complete separation: the relative effect is exactly 0 or 1 and its standard error is
+  # zero, so no test or interval exists for the pair. (Left to itself nparcomp reports
+  # 0.001 or 0.999 with an interval that runs past the 0 to 1 range.)
+  yi <- sub$y[sub$g == lv[i]]; yj <- sub$y[sub$g == lv[j]]
+  if (max(yi) < min(yj) || max(yj) < min(yi)) {
+    gi <- c(gi, lv[i]); gj <- c(gj, lv[j]); est <- c(est, as.numeric(max(yi) < min(yj))); lo <- c(lo, NA); hi <- c(hi, NA)
+    tv <- c(tv, NA); pr <- c(pr, NA); failpair <- c(failpair, paste(lv[i], lv[j], sep="-"))
+    next
+  }
   # the p-value does not depend on conf.level; only the interval width does.
   # rounds = 10: nparcomp rounds its output to 3 decimals by default, and a p-value
   # rounded before the Holm or Bonferroni adjustment gives a wrong adjusted p-value.
@@ -2816,23 +2905,31 @@ for (i in 1:(k-1)) for (j in (i+1):k) {
   a <- r1$Analysis
   # npar.t.test reports p(group1,group2) = P(X_g1 < X_g2). Orient as P(level_i < level_j).
   eff <- a$Estimator[1]; L <- a$Lower[1]; U <- a$Upper[1]; Tval <- a$T[1]; pval <- a$p.Value[1]
+  # A relative effect is a probability: a limit outside [0, 1] is set to the boundary.
+  if (is.finite(L) && is.finite(U) && (L < 0 || U > 1)) { nclip <- nclip + 1; L <- max(L, 0); U <- min(U, 1) }
   gi <- c(gi, lv[i]); gj <- c(gj, lv[j]); est <- c(est, eff); lo <- c(lo, L); hi <- c(hi, U)
   tv <- c(tv, Tval); pr <- c(pr, pval)
 }
 ph <- p.adjust(pr, method = padj_m)
 for (r in seq_along(est)) {
-  if (is.na(est[r])) {
-    cat(sprintf("  %s vs %s: could not be computed (likely complete separation)\\n", gi[r], gj[r]))
+  if (is.na(pr[r])) {
+    if (is.na(est[r])) cat(sprintf("  %s vs %s: could not be computed\\n", gi[r], gj[r]))
+    else cat(sprintf("  P(%s < %s) = %.4f: complete separation, so no test or interval exists for this pair\\n", gi[r], gj[r], est[r]))
   } else {
     cat(sprintf("  P(%s < %s) = %.4f, %.0f%% %s [%.4f, %.4f], T = %.3f, p(raw) = %.5g, %s = %.5g\\n",
         gi[r], gj[r], est[r], conf*100, ci_lab, lo[r], hi[r], tv[r], pr[r], p_lab, ph[r]))
   }
 }
+if (nclip > 0)
+  cat("\\nNOTE: ", nclip, " interval(s) had a limit outside the 0 to 1 range of a probability;\\n",
+      "      the limit was set to the boundary.\\n", sep = "")
+if (length(failpair) > 0)
+  cat("\\nNOTE: the adjusted p-values cover the ", sum(!is.na(pr)), " comparison(s) that could be tested.\\n", sep = "")
 cat("\\nGroup sizes:\\n")
 for (i in 1:k) cat(sprintf("  %s: n = %d\\n", lv[i], ns[i]))
 list(lv = lv, ns = ns, k = k, m = m,
      gi = gi, gj = gj, est = est, lo = lo, hi = hi, tv = tv, pr = pr, ph = ph,
-     nfail = length(failpair))`,
+     nfail = length(failpair), nclip = nclip)`,
     async run({env, cols, active, used, dropped}){
       document.getElementById('edaOut').classList.add('hidden');
       for(const p of this.packages){
@@ -2873,13 +2970,16 @@ list(lv = lv, ns = ns, k = k, m = m,
             {t:pcell(R.ph[r]),num:true}
           ]);
         }
+        const bmExtra =
+          ((R.nfail && R.nfail[0] > 0) ? ` A dash marks a pair that is completely separated (every value in one group is above every value in the other): its relative effect is exactly 0 or 1 and no test or interval exists for it. The adjustment covers the remaining comparisons.` : '')
+          + ((R.nclip && R.nclip[0] > 0) ? ` An interval limit that fell outside the 0 to 1 range of a probability was set to the boundary.` : '');
         const t2 = buildAPA({
           num:2,
           title:`Pairwise Relative Effects for ${resp} by ${grp} (${MB.capCI})`,
           headers:[{t:'Comparison'},{t:'P(1 &lt; 2)',p:'P(1 < 2)',num:true},{t:`${ci} CI`,num:true},
                    {t:'T',it:true,num:true},{t:`<i>p</i> (${MB.pHead})`,p:`p (${MB.pHead})`,num:true}],
           rows:pairRows,
-          note:{html:MB.footHtml, plain:MB.footPlain}
+          note:{html:MB.footHtml + bmExtra, plain:MB.footPlain + bmExtra}
         });
         setAPA(main.screenHtml + sub2(t2));
         lastResult = {
@@ -2901,6 +3001,7 @@ list(lv = lv, ns = ns, k = k, m = m,
   fisher: {
     pctControls: true,
     label: "Fisher's exact test (independence, sparse tables)",
+    ciNotExact: true,
     sided: true,
     dropHint: "Two categorical columns. If your data is pre-aggregated (one row per cell with a frequency), also pick the counts column. Use this when expected counts are small.",
     roles: [
@@ -3058,6 +3159,7 @@ list(p = res$p.value, mc = mc, k = k, N = N, w = w,
 
   mcnemar: {
     label: "McNemar's test (paired proportions)",
+    ciNotExact: true,
     dropHint: "Two categorical columns with 2 levels each (e.g. pre and post status), one row per subject or matched pair. If pre-aggregated (one row per cell with a frequency), also pick the counts column.",
     sided: true,
     roles: [
@@ -3322,7 +3424,9 @@ function updateCiReadout(){
   const t = TESTS[testSel.value], a = currentAlpha(), alt = currentAlt();
   const aTxt = nz(a, 2), cl = ciLevelFor(a, alt);
   if(alt !== 'two.sided'){
-    el.innerHTML = `One-sided test at &alpha; = ${aTxt}: every interval is reported as a two-sided ${pct(cl)} CI, which reaches the same decision as the test.`;
+    el.innerHTML = (t && t.ciNotExact)
+      ? `One-sided test at &alpha; = ${aTxt}: every interval is reported as a two-sided ${pct(cl)} CI, the level matched to the test. In this analysis the interval and the test come from different methods, so they can disagree in a borderline case, when <i>p</i> is very close to &alpha;.`
+      : `One-sided test at &alpha; = ${aTxt}: every interval is reported as a two-sided ${pct(cl)} CI, which reaches the same decision as the test.`;
   } else if(t && t.scaledEffectCI){
     el.innerHTML = `Intervals are two-sided ${pct(cl)} CIs, except the effect-size interval, which is ${pct(ciLevelFor(a,'less'))} because the omnibus test is one-sided.`;
   } else {
@@ -3338,7 +3442,7 @@ async function redrawEda(doneMsg){
   if(testSel.value!=='eda' || !lastEda) return;
   runBtn.disabled=true;
   try{ await drawEDA(lastEda); setStatus(doneMsg); }
-  catch(e){ setStatus('R error: '+e.message,{err:true}); }
+  catch(e){ runFailed(e); }
   finally{ runBtn.disabled=false; }
 }
 edaPaletteEl.addEventListener('change', ()=>redrawEda('Palette updated.'));
@@ -3376,6 +3480,7 @@ function handleFile(file){
   document.getElementById('filename').textContent = file.name;
   const r=new FileReader();
   r.onload=()=>{ const {hdr,cols}=parseCSV(r.result); headers=hdr; columns=cols;
+    clearOutput();   // results from the previous file must not stay on screen
     if(TESTS[testSel.value]){ renderRoles(); roleStep.classList.remove('hidden'); } };
   r.readAsText(file);
 }
@@ -3650,9 +3755,29 @@ function validate(){
 
 /* ============================ run ============================ */
 let lastResult = null;
+// Output must never outlive the inputs it came from. A failed run or a new file removes
+// it; a changed column, option or setting dims it until Run is pressed again.
+function markStale(on){
+  ['outStep','edaOut'].forEach(id=>document.getElementById(id).classList.toggle('stale', on));
+}
+function clearOutput(){
+  ['outStep','edaOut','testPlots'].forEach(id=>document.getElementById(id).classList.add('hidden'));
+  lastResult = null; lastEdaStats = null; lastEda = null;
+  markStale(false);
+}
+function runFailed(e){
+  clearOutput();
+  setStatus('R error: ' + e.message, {err:true});
+}
+['change','input'].forEach(ev=>roleStep.addEventListener(ev, e=>{
+  // The EDA palette and extra-plot switches redraw the plots themselves.
+  if(e.target && (e.target.id === 'edaPalette' || e.target.id === 'edaEcdf')) return;
+  markStale(true);
+}));
 runBtn.addEventListener('click', async ()=>{
   const t = TESTS[testSel.value];
   clearFlags();
+  markStale(false);
   runBtn.disabled=true; setStatus('Running in R…',{busy:true});
   document.getElementById('testPlots').classList.add('hidden');
   const cols = currentCols();
@@ -3660,7 +3785,7 @@ runBtn.addEventListener('click', async ()=>{
   // skip the shared listwise gather below.
   if(t.selfGather){
     try{ await t.run({cols}); }
-    catch(e){ setStatus('R error: '+e.message,{err:true}); }
+    catch(e){ runFailed(e); }
     finally{ runBtn.disabled=false; }
     return;
   }
@@ -3696,7 +3821,7 @@ runBtn.addEventListener('click', async ()=>{
   // custom-run modules (EDA) manage their own output area
   if(t.run){
     try{ await t.run({env, cols, active, used, dropped}); }
-    catch(e){ setStatus('R error: '+e.message,{err:true}); }
+    catch(e){ runFailed(e); }
     finally{ runBtn.disabled=false; }
     return;
   }
@@ -3736,7 +3861,7 @@ runBtn.addEventListener('click', async ()=>{
     const mn=document.getElementById('methodNote');
     if(t.methodNote){ mn.innerHTML=t.methodNote; mn.classList.remove('hidden'); } else { mn.classList.add('hidden'); }
     setStatus(`Done. ${used} rows analysed${dropped?`, ${dropped} dropped for missing values`:''}.`);
-  }catch(e){ setStatus('R error: '+e.message,{err:true}); }
+  }catch(e){ runFailed(e); }
   finally{ await shelter.purge(); runBtn.disabled=false; }
 });
 
