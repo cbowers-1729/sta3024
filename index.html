@@ -68,7 +68,11 @@
   pre.console{background:var(--console-bg); color:var(--console-ink); border-radius:8px; padding:16px;
        font-family:"IBM Plex Mono",monospace; font-size:12.5px; line-height:1.55; overflow-x:auto; margin:0;
        min-height:120px; white-space:pre}
-  .apa{background:#fff; border-radius:8px; padding:20px 20px 16px; border:1px solid var(--rule)}
+  /* min-width:0 lets a grid column shrink below its content, and the panel scrolls
+     sideways instead: a wide table no longer widens the whole page on a phone or
+     spills past the margin on a desktop. */
+  .panels > div{min-width:0}
+  .apa{background:#fff; border-radius:8px; padding:20px 20px 16px; border:1px solid var(--rule); overflow-x:auto}
   .apa .tnum{font-style:italic; font-size:14px; margin:0}
   .apa .ttitle{font-style:italic; font-size:14px; margin:0 0 12px; color:var(--ink-soft)}
   table.apa-tbl{border-collapse:collapse; width:100%; font-size:14px}
@@ -136,6 +140,7 @@
       <div class="big">or drag a file anywhere in this box</div>
       <div class="small" id="dropHint"></div>
       <div class="filename" id="filename"></div>
+      <div class="rolewarn" id="fileWarn" role="status" aria-live="polite"></div>
     </div>
   </div>
 
@@ -185,9 +190,9 @@
       </select>
       <div class="hint" style="margin-top:6px">&ldquo;Greater&rdquo; means the first group (or the first column) tends to be higher than the second, or the parameter is above the test value; &ldquo;less&rdquo; is the reverse (the R console gives R's exact statement). With a one-sided alternative, every interval, effect sizes included, is reported as a two-sided interval at 1 &minus; 2&alpha; (90% at &alpha; = .05), the level matched to the one-sided test (Lakens, Scheel &amp; Isager, 2018).</div>
     </div>
-    <div class="rolewarn" id="roleWarn"></div>
+    <div class="rolewarn" id="roleWarn" role="status" aria-live="polite"></div>
     <div class="run"><button class="run-btn" id="runBtn" disabled>Run analysis</button></div>
-    <div class="status" id="status"></div>
+    <div class="status" id="status" role="status" aria-live="polite"></div>
   </div>
 
   <div class="step hidden" id="outStep">
@@ -368,7 +373,7 @@ const isNum = x => x !== null && x !== undefined && x !== '' && Number.isFinite(
 const NA_TXT = 'NA';
 const naFlag = () => addFlag('na',
   `<b>Not computable.</b> At least one statistic is undefined for these data and is shown as NA. Common causes are a group with no variation, two groups whose proportions are both exactly 0 or both exactly 1, and groups that do not overlap at all. The R console has the details.`);
-function fmtNum(x, d, lead){
+function fmtNum(x, d, lead, kind = 'units'){
   if(x === null || x === undefined || x === '' || Number.isNaN(Number(x))){ naFlag(); return NA_TXT; }
   const v = Number(x);
   if(!Number.isFinite(v)) return (v < 0 ? MINUS : '') + '\u221E';
@@ -378,7 +383,9 @@ function fmtNum(x, d, lead){
     // Which advice applies depends on the quantity. lead=true means it can exceed 1,
     // so it is in the outcome's units and rescaling is available; lead=false means a
     // proportion, correlation, or other bounded index, where there is no scale to change.
-    if(lead) addFlag('truncated',
+    if(lead && kind !== 'units') addFlag('small',
+      `<b>Below the last decimal place.</b> A nonzero value is smaller than the last decimal shown, so it is reported as a bound instead of as zero. The R console has the exact value.`);
+    else if(lead) addFlag('truncated',
       `<b>Consider rescaling.</b> A nonzero value is smaller than the last decimal place shown, so it is reported as a bound instead of as zero. Multiplying the outcome by a constant (100, say) would let it print as a number. The R console keeps the full precision either way.`);
     else addFlag('bounded',
       `<b>Below the last decimal place.</b> A bounded quantity (a proportion, correlation, or similar) is smaller than the last decimal shown, so it is reported as a bound rather than as zero. There is no scale to change here; the exact value is in the R console.`);
@@ -390,7 +397,11 @@ function fmtNum(x, d, lead){
   if(!lead) s = s.replace(/^(-?)0\./, '$1.');
   return pre + s.replace(/^-/, MINUS);
 }
-const f2 = (x, d=2) => fmtNum(x, d, true);
+// f2 with an explicit number of decimals is a quantity in the outcome's units, where
+// rescaling is possible. f2 with the default two decimals, and fe, are for unit-free
+// statistics (t, F, effect sizes, ratios, Cook's D), where it is not.
+const f2 = (x, d) => fmtNum(x, d === undefined ? 2 : d, true, d === undefined ? 'plain' : 'units');
+const fe = (x, d=2) => fmtNum(x, d, true, 'plain');
 const nz = (x, d=2) => fmtNum(x, d, false);
 // df: integer when the df is an integer (one-sample, paired, chi-square),
 // two decimals when it is fractional (Welch, Brunner-Munzel).
@@ -585,6 +596,70 @@ find_ncp_limits <- function(ncp, df, alpha) {
   })
 }`;
 
+/* ============================ input checks ============================
+   Run before R is called, so a problem with the data is explained in plain words
+   next to the Run button instead of surfacing as an R error message. */
+// n and SD of a numeric column within each level of a grouping column, after the same
+// listwise deletion the run applies.
+function groupSummary(respCol, grpCol){
+  const Rv = columns[respCol], Gv = columns[grpCol];
+  if(!Rv || !Gv) return null;
+  const by = new Map();
+  for(let i=0;i<Rv.length;i++){
+    const v = Rv[i], g = Gv[i];
+    if(isNA(v) || isNA(g) || !Number.isFinite(Number(v))) continue;
+    const key = String(g).trim();
+    if(!by.has(key)) by.set(key, []);
+    by.get(key).push(Number(v));
+  }
+  return [...by.entries()].map(([g,v])=>{
+    const n = v.length, m = v.reduce((a,b)=>a+b,0)/n;
+    const sd = n > 1 ? Math.sqrt(v.reduce((a,b)=>a+(b-m)*(b-m),0)/(n-1)) : NaN;
+    return { g, n, sd };
+  });
+}
+// spread: 'each' = every group needs a nonzero SD; 'any' = at least one group does.
+function groupCheck(cols, { spread = null, what = 'this analysis' } = {}){
+  if(!cols.resp || !cols.grp || cols.resp === cols.grp) return '';
+  const gs = groupSummary(cols.resp, cols.grp);
+  if(!gs || !gs.length) return '';
+  const small = gs.filter(x=>x.n < 2);
+  if(small.length)
+    return `Each group needs at least 2 values. ${small.map(x=>`Group "${x.g}" has ${x.n}`).join('; ')}.`;
+  const flat = gs.filter(x=>!(x.sd > 0));
+  if(spread === 'each' && flat.length)
+    return `Every value in group "${flat[0].g}" is the same, so its standard deviation is 0 and ${what} cannot be computed.`;
+  if(spread === 'any' && flat.length === gs.length)
+    return `Every value within each group is the same, so there is no variation and ${what} cannot be computed.`;
+  return '';
+}
+// Complete numeric cases of one or two columns.
+function numericCases(...names){
+  const colsv = names.map(n=>columns[n]);
+  if(colsv.some(c=>!c)) return null;
+  const out = [];
+  for(let i=0;i<colsv[0].length;i++){
+    const row = colsv.map(c=>c[i]);
+    if(row.some(v=>isNA(v) || !Number.isFinite(Number(v)))) continue;
+    out.push(row.map(Number));
+  }
+  return out;
+}
+const allSame = a => a.length > 0 && a.every(v=>v === a[0]);
+// Turns the R errors students are most likely to meet into a plain explanation.
+function friendlyError(msg){
+  const m = String(msg);
+  const table = [
+    [/essentially constant/i, 'All of the values (or all of the paired differences) are identical, so there is no variation to test.'],
+    [/not enough/i, 'There are too few values for this analysis. Check that every group has at least 2 values.'],
+    [/must be nonnegative and finite|must not be greater than those of|non-integer|invalid format '%d'/i, 'The counts column has a value that cannot be a count. Counts must be whole numbers of 0 or more.'],
+    [/subscript out of bounds|missing value where TRUE\/FALSE needed|need finite|NA\/NaN\/Inf/i, 'A statistic could not be computed for these data. Check for a group or a column with no variation, or with very few values.'],
+    [/supplied seed is not a valid integer/i, 'The random seed must be a whole number no larger than 2,147,483,647.']
+  ];
+  const hit = table.find(([re])=>re.test(m));
+  return hit ? `${hit[1]} (R reported: ${esc(m)})` : 'R error: ' + esc(m);
+}
+
 /* ============================ test registry ============================ */
 /* ============================ EDA helpers ============================ */
 let ggReady = false;
@@ -639,14 +714,14 @@ function edaStatsBuild(M){
       : [[null, summ(v.vals)]];
     return {name:v.name, rows, D:seDigits(rows.map(([,st])=>st.sem))};
   });
-  const labHeads = showVar ? ['Variable'].concat(hasG?[gname]:[]) : [gname];
+  const labHeads = showVar ? ['Variable'].concat(hasG?[esc(gname)]:[]) : [esc(gname)];
   const nLab = labHeads.length;
   const statHead = ['n','M','SD','SEM','Min','Q1','Mdn','Q3','Max'];
   const cells = (st,D) => [String(st.n), f2(st.mean,D), f2(st.sd,D), f2(st.sem,D), f2(st.min,D), f2(st.q1,D), f2(st.mdn,D), f2(st.q3,D), f2(st.max,D)];
   // flat rows: {lab:[...], num:[...], blockStart}
   const rows = [];
   blocks.forEach((b,bi)=>b.rows.forEach(([g,st],ri)=>{
-    const lab = showVar ? [ri===0 ? b.name : ''].concat(hasG?[g]:[]) : [g];
+    const lab = showVar ? [ri===0 ? esc(b.name) : ''].concat(hasG?[esc(g)]:[]) : [esc(g)];
     rows.push({lab, num:cells(st,b.D), blockStart: ri===0 && bi>0});
   }));
 
@@ -657,7 +732,7 @@ function edaStatsBuild(M){
       r.num.map(x=>`<td class="num"${pad}>${x}</td>`).join('')+`</tr>`; }).join('');
   const screenHtml = `<table class="apa-tbl"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
 
-  const title = `Descriptive Statistics for ${listJoin(vars.map(v=>v.name))}${hasG?` by ${gname}`:''}`;
+  const title = `Descriptive Statistics for ${listJoin(vars.map(v=>esc(v.name)))}${hasG?` by ${esc(gname)}`:''}`;
   const missTxt = (multi && M.missing) ? ' Missing values were excluded separately for each variable, so n can differ across variables.' : '';
   const noteHtml  = `<i>Note.</i> <i>SEM</i> = standard error of the mean; <i>Q</i>1 and <i>Q</i>3 = first and third quartiles; <i>Mdn</i> = median. Quartiles use R's type-7 definition.${missTxt.replace(' n ',' <i>n</i> ')}`;
   const notePlain = `Note. SEM = standard error of the mean; Q1 and Q3 = first and third quartiles; Mdn = median. Quartiles use R's type-7 definition.${missTxt}`;
@@ -806,9 +881,10 @@ const TESTS = {
       if(!pv.group1)
         return 'Choose the first group. It decides which mean comes first, and so the sign of the mean difference and of Hedges\' <i>g*</i><sub>s</sub>.';
       const g2 = levelsOf(columns[g]).filter(x=>x!==pv.group1)[0] || '';
-      return `Mean difference = mean ${r} in ${pv.group1} (first group) − mean ${r} in ${g2}.`;
+      return `Mean difference = mean ${esc(r)} in ${esc(pv.group1)} (first group) − mean ${esc(r)} in ${esc(g2)}.`;
     },
     defaults: { resp:'bwt', grp:'smoke' },
+    check: cols => groupCheck(cols, { spread:'any', what:"Welch's t test" }),
     resultKeys: ['t','df','p','md','cil','ciu','g','gl','gu','m1','s1','n1','m2','s2','n2','se'],
     rProgram: FIND_NCP + `
 g.star.ci <- function(x.bar.1, x.bar.2, s.1, s.2, n.1, n.2, alpha) {
@@ -873,6 +949,13 @@ c(t=unname(tt$statistic), df=unname(tt$parameter), p=tt$p.value,
       { key:'post', kind:'numeric', label:'Second condition (e.g. post) — numeric' }
     ],
     defaults: {},
+    check(cols){
+      if(!cols.pre || !cols.post || cols.pre === cols.post) return '';
+      const rows = numericCases(cols.pre, cols.post); if(!rows) return '';
+      if(rows.length < 2) return 'The paired t test needs at least 2 complete pairs.';
+      if(allSame(rows.map(r=>r[0]-r[1]))) return 'Every pair has the same difference, so the differences have no variation and the paired t test cannot be computed.';
+      return '';
+    },
     resultKeys: ['t','df','p','md','cil','ciu','g','gl','gu','sdd','n','mpre','sdpre','mpost','sdpost'],
     rProgram: FIND_NCP + `
 x <- as.numeric(pre); y <- as.numeric(post)
@@ -936,6 +1019,7 @@ c(t=t.obs, df=df, p=tt$p.value, md=md, cil=tt$conf.int[1], ciu=tt$conf.int[2],
     },
     sided: true,
     defaults: { resp:'bwt', grp:'smoke' },
+    check: cols => groupCheck(cols),
     resultKeys: ['stat','df','p','phat','cil','ciu','n1','md1','n2','md2','sep','clip'],
     rProgram: `
 d <- data.frame(resp = as.numeric(resp), grp = factor(grp))
@@ -1030,7 +1114,7 @@ c(stat=stat, df=df, p=p, phat=pst, cil=ci[1], ciu=ci[2],
       const g2 = levelsOf(columns[g]).filter(x=>x!==pv.group1)[0] || '';
       return `Median difference = median ${esc(r)} in ${esc(pv.group1)} (first group) − median ${esc(r)} in ${esc(g2)}.`;
     },
-    methodNote: "<b>Setup.</b> The first group is the group whose median comes first, so the difference reported is the first group minus the other group. Swapping the groups reverses the sign of the difference and of its interval; the two-sided <i>p</i>-value is unchanged. <b>Why this analysis.</b> This estimates the difference between the two group <i>medians</i>, a location shift in the outcome's own units. It is the right estimand for an interval or ratio outcome when the mean is not the target, as with skewed or bounded clinical and screening scores. The Brunner-Munzel test in this same section answers a different question, stochastic superiority rather than location (Divine et al., 2018). <b>How it is computed.</b> A <b>smoothed percentile bootstrap</b>: each group is resampled 2,000 times, a small amount of kernel noise is added to every resample, and the interval is read off the percentiles of the resulting distribution of median differences (Silverman &amp; Young, 1987). The point estimate is the ordinary difference of sample medians; smoothing affects only the interval. <b>Why smoothed.</b> The bootstrap distribution of a median is atomic, since a resample median can only take values already present in the sample, and when data are recorded on a coarse scale such as whole numbers or a rating scale, that lattice makes several standard methods fail, some of them <i>worse</i> as the sample grows. Kernel smoothing breaks the lattice. In simulation across skewed populations and rounding levels this approach held its coverage where quantile-regression standard errors, Bonett-Price, and BCa did not. <b>The <i>p</i>-value.</b> It is obtained by inverting the interval: it is the level at which the interval would just exclude zero. Test and interval are therefore the same event and cannot contradict each other. A separate distance-from-centre <i>p</i>-value would not guarantee that, because the bootstrap distribution of a median difference is skewed and an equal-tailed interval is a different event. <b>Reproducibility.</b> Resampling uses the seed shown in the setup panel, so the same data and the same seed give identical output; change the seed to see how far the last digits move. <b>Assumptions.</b> Independent observations within and between groups, and a uniquely defined population median in each group. Nothing is assumed about shape, spread, or normality, and the two groups need not share any of them. <b>More than two groups.</b> Use the pairwise median differences module, which runs this same bootstrap with familywise error control.",
+    methodNote: "<b>Setup.</b> The first group is the group whose median comes first, so the difference reported is the first group minus the other group. Swapping the groups reverses the sign of the difference and of its interval; the two-sided <i>p</i>-value is unchanged. <b>Why this analysis.</b> This estimates the difference between the two group <i>medians</i>, a location shift in the outcome's own units. It is the right estimand for an interval or ratio outcome when the mean is not the target, as with skewed or bounded clinical and screening scores. The Brunner-Munzel test in this same section answers a different question, stochastic superiority rather than location (Divine et al., 2018). <b>How it is computed.</b> A <b>smoothed percentile bootstrap</b>: each group is resampled 2,000 times, a small amount of kernel noise is added to every resample, and the interval is read off the percentiles of the resulting distribution of median differences (Silverman &amp; Young, 1987). The point estimate is the ordinary difference of sample medians; smoothing affects only the interval. <b>Why smoothed.</b> The bootstrap distribution of a median is atomic, since a resample median can only take values already present in the sample, and when data are recorded on a coarse scale such as whole numbers or a rating scale, that lattice makes several standard methods fail, some of them <i>worse</i> as the sample grows. Kernel smoothing breaks the lattice. In simulation across skewed populations and rounding levels this approach held its coverage where quantile-regression standard errors, Bonett-Price, and BCa did not. <b>The <i>p</i>-value.</b> It is obtained by inverting the interval: it is the level at which the interval would just exclude zero. Test and interval are therefore the same event and cannot contradict each other. A separate distance-from-center <i>p</i>-value would not guarantee that, because the bootstrap distribution of a median difference is skewed and an equal-tailed interval is a different event. <b>Reproducibility.</b> Resampling uses the seed shown in the setup panel, so the same data and the same seed give identical output; change the seed to see how far the last digits move. <b>Assumptions.</b> Independent observations within and between groups, and a uniquely defined population median in each group. Nothing is assumed about shape, spread, or normality, and the two groups need not share any of them. <b>More than two groups.</b> Use the pairwise median differences module, which runs this same bootstrap with familywise error control.",
     roles: [
       { key:'resp', kind:'numeric', label:'Response (numeric outcome)' },
       { key:'grp',  kind:'group2',  label:'Group (must have exactly 2 levels)' }
@@ -1038,9 +1122,11 @@ c(stat=stat, df=df, p=p, phat=pst, cil=ci[1], ciu=ci[2],
     params: [
       { key:'group1', type:'level', fromRole:'grp', required:true, shortLabel:'first group',
         label:'First group: the group whose median comes first; the difference reported is the first group minus the other group' },
-      { key:'seed', type:'number', label:'Random seed (bootstrap resampling)', default:20260907 }
+      { key:'seed', type:'number', shortLabel:'random seed', label:'Random seed (bootstrap resampling)', default:20260907,
+        test: v => (Number.isInteger(v) && v >= 0 && v <= 2147483647) ? '' : 'The random seed must be a whole number from 0 to 2,147,483,647.' }
     ],
     defaults: { resp:'bwt', grp:'smoke' },
+    check: cols => groupCheck(cols),
     resultKeys: ['est','cil','ciu','p','se','n1','md1','iqr1','n2','md2','iqr2','zw','seedv'],
     rProgram: `
 # Difference between two independent medians by SMOOTHED PERCENTILE BOOTSTRAP.
@@ -1084,7 +1170,7 @@ norm_inter <- function(ts, a) {
 }
 # The level at which the percentile endpoint lands exactly on the null value.
 # Reading the p-value off this level makes the test and the interval the same
-# event, so they cannot contradict each other. A symmetric "how far from centre"
+# event, so they cannot contradict each other. A symmetric "how far from center"
 # p-value would be a different event, because the bootstrap distribution of a
 # median difference is skewed while the interval is equal-tailed.
 perc_level <- function(ts, v0) {
@@ -1186,9 +1272,16 @@ c(est=est, cil=cil, ciu=ciu, p=p, se=se,
       { key:'resp', kind:'numeric', label:'Variable — numeric' }
     ],
     params: [
-      { key:'mu0', label:'Hypothesized mean (\u03BC\u2080)', default:0 }
+      { key:'mu0', shortLabel:'hypothesized mean', label:'Hypothesized mean (\u03BC\u2080)', default:0 }
     ],
     defaults: {},
+    check(cols){
+      if(!cols.resp) return '';
+      const rows = numericCases(cols.resp); if(!rows) return '';
+      if(rows.length < 2) return 'The one-sample t test needs at least 2 values.';
+      if(allSame(rows.map(r=>r[0]))) return 'Every value is the same, so the standard deviation is 0 and the t test cannot be computed.';
+      return '';
+    },
     resultKeys: ['t','df','p','m','s','n','mu0','cil','ciu','g','gl','gu'],
     rProgram: FIND_NCP + `
 x <- as.numeric(resp)
@@ -1273,8 +1366,8 @@ list(chi2 = unname(ct$statistic), df = unname(ct$parameter), p = ct$p.value,
         const cap = await shelter.captureR(this.rProgram, { env });
         const consoleText = cap.output.filter(o=>o.type==='stdout'||o.type==='stderr').map(o=>o.data).join('\n');
         const R = rlistToObj(await cap.result.toJs());
-        const nr=R.nr[0], nc=R.nc[0], obs=R.obs, exp=R.exp, std=R.std, rowlab=R.rowlab, collab=R.collab;
-        const rowName=cols.row, colName=cols.col;
+        const nr=R.nr[0], nc=R.nc[0], obs=R.obs, exp=R.exp, std=R.std, rowlab=R.rowlab.map(esc), collab=R.collab.map(esc);
+        const rowName=esc(cols.row), colName=esc(cols.col);
         const pc = pctOpts();
         const headers=[{t:rowName}].concat(collab.map(c=>({t:String(c), num:true}))).concat([{t:'Total', num:true}]);
         const rows=crossRows(obs, nr, nc, rowlab, pc);
@@ -1399,7 +1492,7 @@ list(chi2 = unname(ct$statistic), df = unname(ct$parameter), p = ct$p.value, N =
         const cap = await shelter.captureR(this.rProgram, { env });
         const consoleText = cap.output.filter(o=>o.type==='stdout'||o.type==='stderr').map(o=>o.data).join('\n');
         const R = rlistToObj(await cap.result.toJs());
-        const k=R.k[0], lab=R.lab, obs=R.obs, exp=R.exp, varName=cols.variable;
+        const k=R.k[0], lab=R.lab.map(esc), obs=R.obs, exp=R.exp, varName=esc(cols.variable);
         const headers=[{t:varName},{t:'Observed',num:true},{t:'Expected',num:true},{t:'Std. residual',num:true}];
         const rows=[];
         const Ng = R.N[0];
@@ -1440,7 +1533,8 @@ list(chi2 = unname(ct$statistic), df = unname(ct$parameter), p = ct$p.value, N =
     params: [
       { key:'success', type:'level', fromRole:'outcome', required:true, shortLabel:'success category',
         label:'Success category: the level counted as a success' },
-      { key:'p0', type:'number', default:0.5, label:'Hypothesized proportion (p\u2080)' }
+      { key:'p0', type:'number', default:0.5, shortLabel:'hypothesized proportion', label:'Hypothesized proportion (p\u2080)',
+        test: v => (v > 0 && v < 1) ? '' : 'The hypothesized proportion must be between 0 and 1 (for example 0.25, not 25).' }
     ],
     defaults: { outcome:'Gender', counts:'Count' },
     resultKeys: ['x','n','phat','z','p','cil','ciu','p0','h2','h2l','h2u'],
@@ -1542,13 +1636,17 @@ c(x=x, n=n, phat=phat, z=zstat, p=ptst$p.value, cil=ptst$conf.int[1], ciu=ptst$c
     render(R, ctx){
       const outcome = ctx.cols.outcome, success = ctx.env.success;
       const D = seDigits(seProp(R.phat, R.n));
+      // The typed test value is exact, so it is never rounded: .125 stays .125 even when
+      // the estimates beside it are shown to two decimals.
+      const typedDec = (String(ctx.raw.env.p0).split('.')[1] || '').length;
+      const p0Txt = nz(R.p0, Math.max(D, Math.min(typedDec, DIG_MAX)));
       return buildAPA({
         title:`One-Sample Proportion Test for ${outcome} (success = ${success})`,
         headers:[{t:'Category'},{t:'x',it:true,num:true},{t:'n',it:true,num:true},{t:'p\u0302',num:true}],
         rows:[[{t:success},{t:R.x,num:true},{t:R.n,num:true},{t:nz(R.phat,D)}]],
         note:{
-          html:`<i>Note.</i> <i>z</i> = ${f2(R.z)}, <i>p</i> ${pFmt(R.p)}, ${sidedTxt(ctx.env.alt)}, test value = ${nz(R.p0,D)}. Sample proportion <i>p&#770;</i> = ${nz(R.phat,D)}, ${pct(ctx.conf)} Wilson CI [${nz(R.cil,D)}, ${nz(R.ciu,D)}]. Cohen's <i>h</i><sub>2</sub> = ${f2(R.h2)}, ${pct(ctx.conf)} CI [${f2(R.h2l)}, ${f2(R.h2u)}].`,
-          plain:`Note. z = ${f2(R.z)}, p ${pFmt(R.p)}, ${sidedTxt(ctx.env.alt)}, test value = ${nz(R.p0,D)}. Sample proportion p-hat = ${nz(R.phat,D)}, ${pct(ctx.conf)} Wilson CI [${nz(R.cil,D)}, ${nz(R.ciu,D)}]. Cohen's h2 = ${f2(R.h2)}, ${pct(ctx.conf)} CI [${f2(R.h2l)}, ${f2(R.h2u)}].`
+          html:`<i>Note.</i> <i>z</i> = ${f2(R.z)}, <i>p</i> ${pFmt(R.p)}, ${sidedTxt(ctx.env.alt)}, test value = ${p0Txt}. Sample proportion <i>p&#770;</i> = ${nz(R.phat,D)}, ${pct(ctx.conf)} Wilson CI [${nz(R.cil,D)}, ${nz(R.ciu,D)}]. Cohen's <i>h</i><sub>2</sub> = ${f2(R.h2)}, ${pct(ctx.conf)} CI [${f2(R.h2l)}, ${f2(R.h2u)}].`,
+          plain:`Note. z = ${f2(R.z)}, p ${pFmt(R.p)}, ${sidedTxt(ctx.env.alt)}, test value = ${p0Txt}. Sample proportion p-hat = ${nz(R.phat,D)}, ${pct(ctx.conf)} Wilson CI [${nz(R.cil,D)}, ${nz(R.ciu,D)}]. Cohen's h2 = ${f2(R.h2)}, ${pct(ctx.conf)} CI [${f2(R.h2l)}, ${f2(R.h2u)}].`
         }
       });
     }
@@ -1608,10 +1706,6 @@ if (k < 1) {
   cat("Lower limit:          ", formatC(lo,  format = "f", digits = 4), "\\n", sep = "")
   cat("Upper limit:          ", formatC(hi,  format = "f", digits = 4), "\\n", sep = "")
   cat("Margin of error:      ", formatC(moe, format = "f", digits = 4), "\\n\\n", sep = "")
-
-  cat("We are ", formatC(100*ach, format = "f", digits = 2), "% confident that the population median of\\n", sep = "")
-  cat(resp_name, " is between ", formatC(lo, format = "f", digits = 2),
-      " and ", formatC(hi, format = "f", digits = 2), ".\\n\\n", sep = "")
 
   cat("Assumptions\\n")
   cat(strrep("-", 62), "\\n", sep = "")
@@ -1695,8 +1789,8 @@ c(ok=ok, n=n, med=med, q1=qq[1], q3=qq[2], iqr=qq[2]-qq[1], mn=x[1], mx=x[n],
       if(!pv.success || !pv.group1)
         return 'Choose the success category and the first group. Together they decide which proportion is <i>p</i><sub>1</sub> and which is <i>p</i><sub>2</sub>, and so the sign of the difference.';
       const g2 = levelsOf(columns[g]).filter(x=>x!==pv.group1)[0] || '';
-      return `<i>p</i><sub>1</sub> = proportion of ${o} = ${pv.success} in ${pv.group1} (row 1). `
-           + `<i>p</i><sub>2</sub> = proportion of ${o} = ${pv.success} in ${g2} (row 2). `
+      return `<i>p</i><sub>1</sub> = proportion of ${esc(o)} = ${esc(pv.success)} in ${esc(pv.group1)} (row 1). `
+           + `<i>p</i><sub>2</sub> = proportion of ${esc(o)} = ${esc(pv.success)} in ${esc(g2)} (row 2). `
            + `The difference reported is <i>p</i><sub>1</sub> − <i>p</i><sub>2</sub>.`;
     },
     defaults: {},
@@ -1893,8 +1987,8 @@ list(lv = lv, xs = xs, ns = ns, ps = ps, k = k, m = m,
         const cap = await shelter.captureR(this.rProgram, { env });
         const consoleText = cap.output.filter(o=>o.type==='stdout'||o.type==='stderr').map(o=>o.data).join('\n');
         const R = rlistToObj(await cap.result.toJs());
-        const grp=cols.grp, outcome=cols.outcome, success=env.success, ci=pct(env.conf);
-        const k=R.k[0], m=R.m[0], lv=R.lv;
+        const grp=esc(cols.grp), outcome=esc(cols.outcome), success=esc(env.success), ci=pct(env.conf);
+        const k=R.k[0], m=R.m[0], lv=R.lv.map(esc);
         const MB = multBits(multOn(env), m, ci, false);
         const pcell = pCell;
         // Precision from sqrt(p(1-p)/n): the group column from the smallest group SE,
@@ -1918,7 +2012,7 @@ list(lv = lv, xs = xs, ns = ns, ps = ps, k = k, m = m,
         const pairRows = [];
         for(let r=0;r<m;r++){
           pairRows.push([
-            {t:`${String(R.gi[r])} \u2212 ${String(R.gj[r])}`},
+            {t:`${esc(R.gi[r])} \u2212 ${esc(R.gj[r])}`},
             {t:nz(R.dv[r],Dd),num:true},
             {t:`[${nz(R.lo[r],Dd)}, ${nz(R.hi[r],Dd)}]`,num:true},
             {t:f2(R.zv[r]),num:true},
@@ -1962,12 +2056,20 @@ list(lv = lv, xs = xs, ns = ns, ps = ps, k = k, m = m,
       { key:'predictor', kind:'numeric', label:'Predictor (X) — numeric' }
     ],
     params: [
-      { key:'x0', type:'number', optional:true, default:'', label:'Predict at X = (optional) — leave blank to skip the prediction' }
+      { key:'x0', type:'number', optional:true, default:'', shortLabel:'value to predict at', label:'Predict at X = (optional) — leave blank to skip the prediction' }
     ],
     packages: ['ggplot2'],
     plotSize: { width:700, height:480 },
     plotCaptions: ['Regression with confidence and prediction bands', 'Residuals vs fitted (right axis: standardized)', 'Normal Q-Q of residuals', 'Cook\'s distance by observation (dotted line: 4/n)'],
     defaults: { response:'bmd', predictor:'age' },
+    check(cols){
+      if(!cols.response || !cols.predictor || cols.response === cols.predictor) return '';
+      const rows = numericCases(cols.response, cols.predictor); if(!rows) return '';
+      if(rows.length < 3) return 'Regression needs at least 3 complete rows.';
+      if(allSame(rows.map(r=>r[1]))) return `Every value of the predictor (${cols.predictor}) is the same, so a slope cannot be estimated.`;
+      if(allSame(rows.map(r=>r[0]))) return `Every value of the response (${cols.response}) is the same, so there is nothing to explain.`;
+      return '';
+    },
     resultKeys: ['b0','b0se','b0t','b0p','b0l','b0u','b1','b1se','b1t','b1p','b1l','b1u','f','df1','df2','fp','r2','adjr2','r','rl','ru','n','px','pcl','pcu','ppl','ppu','ssr','sse','ninf','nflip','cutd','maxd',
       ...Array.from({length:10},(_,k)=>['obs','x','y','z','h','d','b','p','f'].map(q=>'i'+(k+1)+'_'+q)).flat()],
     rProgram: `
@@ -1976,11 +2078,14 @@ fit <- lm(y ~ x); s <- summary(fit); co <- s$coefficients
 ci <- confint(fit, level = conf)
 fstat <- unname(s$fstatistic[1]); df1 <- unname(s$fstatistic[2]); df2 <- unname(s$fstatistic[3])
 ct <- cor.test(x, y, conf.level = conf)
+# With n = 3, cor.test returns no interval. Keep two placeholders so the values
+# returned at the end stay in their fixed positions.
+rci <- if (is.null(ct$conf.int)) c(NA_real_, NA_real_) else ct$conf.int
 print(s)
 an <- anova(fit); ssr <- an[1, "Sum Sq"]; sse <- an[2, "Sum Sq"]
 cat("\\nAnalysis of variance table:\\n"); print(an)
 cat(sprintf("\\n%.0f%% CI for coefficients:\\n", conf*100)); print(ci)
-cat(sprintf("\\nPearson r = %.4f, %.0f%% CI [%.4f, %.4f] (Fisher z)\\n", unname(ct$estimate), conf*100, ct$conf.int[1], ct$conf.int[2]))
+cat(sprintf("\\nPearson r = %.4f, %.0f%% CI [%.4f, %.4f] (Fisher z)\\n", unname(ct$estimate), conf*100, rci[1], rci[2]))
 if (is.finite(x0)) {
   nd <- data.frame(x = x0)
   pcf <- predict(fit, nd, interval = "confidence", level = conf)
@@ -2062,7 +2167,7 @@ c(b0=co[1,1], b0se=co[1,2], b0t=co[1,3], b0p=co[1,4], b0l=ci[1,1], b0u=ci[1,2],
   b1=co[2,1], b1se=co[2,2], b1t=co[2,3], b1p=co[2,4], b1l=ci[2,1], b1u=ci[2,2],
   f=fstat, df1=df1, df2=df2, fp=pf(fstat, df1, df2, lower.tail=FALSE),
   r2=s$r.squared, adjr2=s$adj.r.squared,
-  r=unname(ct$estimate), rl=ct$conf.int[1], ru=ct$conf.int[2], n=length(y),
+  r=unname(ct$estimate), rl=rci[1], ru=rci[2], n=length(y),
   px=px, pcl=pcl, pcu=pcu, ppl=ppl, ppu=ppu, ssr=ssr, sse=sse,
   ninf=ninf, nflip=nflip, cutd=cutD, maxd=max(cd), as.vector(t(mat)))`,
     render(R, ctx){
@@ -2117,7 +2222,7 @@ c(b0=co[1,1], b0se=co[1,2], b0t=co[1,3], b0p=co[1,4], b0l=ci[1,1], b0u=ci[1,2],
       // Table 3: influence of single observations (Cook's D > 4/n, or a change in the
       // decision about the slope when the observation is removed and the line refit).
       const alphaTxt = nz(1 - ctx.conf, 3).replace(/0+$/,'').replace(/\.$/,'');
-      const cutTxt = f2(R.cutd, 2), maxTxt = f2(R.maxd, 2);
+      const cutTxt = fe(R.cutd), maxTxt = fe(R.maxd);
       const flagTxt = {1:'Cook’s <i>D</i>', 2:'Decision change', 3:'Both'};
       const flagPlain = {1:'Cooks D', 2:'Decision change', 3:'Both'};
       const nShown = Math.min(R.ninf, 10);
@@ -2150,10 +2255,10 @@ c(b0=co[1,1], b0se=co[1,2], b0t=co[1,3], b0p=co[1,4], b0l=ci[1,1], b0u=ci[1,2],
           }
           return Math.min(d, 4);
         };
-        const DX = rawDec(pred), DY = rawDec(resp);
+        const DX = rawDec(ctx.raw.cols.predictor), DY = rawDec(ctx.raw.cols.response);
         for(let k=1; k<=nShown; k++){
           const g = q => R['i'+k+'_'+q];
-          rows3.push([{t:String(g('obs')),num:true},{t:f2(g('x'),DX),num:true},{t:f2(g('y'),DY),num:true},{t:f2(g('z')),num:true},{t:nz(g('h'),3),num:true},{t:f2(g('d'),3),num:true},
+          rows3.push([{t:String(g('obs')),num:true},{t:f2(g('x'),DX),num:true},{t:f2(g('y'),DY),num:true},{t:f2(g('z')),num:true},{t:nz(g('h'),3),num:true},{t:fe(g('d'),3),num:true},
             {t:Number.isFinite(g('b'))?f2(g('b'),D1):'',num:true},{t:Number.isFinite(g('p'))?pc(g('p')):'',num:true},{t:flagTxt[g('f')],p:flagPlain[g('f')],num:true}]);
         }
         t3 = buildAPA({
@@ -2278,7 +2383,7 @@ list(term = rownames(co), est = co[,1], se = co[,2], tval = co[,3], pval = co[,4
       const predKeys = ['predictor1','predictor2','predictor3','predictor4'].filter(k=>cols[k]);
       predKeys.forEach(k=>{ env[k+'_ty'] = isNumericCol(columns[cols[k]]) ? 'num' : 'cat'; });
       // build the model formula from validated column names
-      const bq = s => '`'+s+'`';
+      const bq = s => '`'+String(s).replace(/\\/g,'\\\\').replace(/`/g,'\\`')+'`';
       const predNames = predKeys.map(k=>cols[k]);
       const main = predNames.map(bq).join(' + ');
       const inter = [];
@@ -2287,7 +2392,7 @@ list(term = rownames(co), est = co[,1], se = co[,2], tval = co[,3], pval = co[,4
         for(let i=0;i<predNames.length;i++) for(let j=i+1;j<predNames.length;j++) inter.push(bq(predNames[i])+':'+bq(predNames[j]));
       } else if(mode==='custom'){
         [...document.querySelectorAll('#mlrCustom [data-inter]:checked')].forEach(c=>{
-          inter.push(c.value.split('|').map(bq).join(':'));
+          inter.push(c.value.split(INTER_SEP).map(bq).join(':'));
         });
       }
       env.fml = '.y ~ ' + [main, ...inter].filter(Boolean).join(' + ');
@@ -2301,14 +2406,14 @@ list(term = rownames(co), est = co[,1], se = co[,2], tval = co[,3], pval = co[,4
         const ci = pct(env.conf), pc = pCell;
         const term=R.term, est=R.est, se=R.se, tv=R.tval, pv=R.pval, lo=R.lo, hi=R.hi;
         const aliasTxt = (R.nalias && R.nalias[0] > 0)
-          ? ` Not estimated and left out of the table because redundant with the other terms (an exact linear combination of them): ${R.aliased[0]}.` : '';
+          ? ` Not estimated and left out of the table because redundant with the other terms (an exact linear combination of them): ${esc(R.aliased[0])}.` : '';
         // Precision is per row, from that row's SE: the terms are on different scales.
         const rows = term.map((tm,i)=>{ const Di = seDigits(se[i]); return [
-          {t:String(tm)},{t:f2(est[i],Di),num:true},{t:f2(se[i],Di),num:true},
+          {t:esc(tm)},{t:f2(est[i],Di),num:true},{t:f2(se[i],Di),num:true},
           {t:f2(tv[i]),num:true},{t:pc(pv[i]),num:true},{t:`[${f2(lo[i],Di)}, ${f2(hi[i],Di)}]`,num:true}
         ]; });
         const out = buildAPA({
-          title:`Multiple Linear Regression: ${cols.response} on ${predNames.join(', ')}${inter.length?' (with interaction)':''}`,
+          title:`Multiple Linear Regression: ${esc(cols.response)} on ${predNames.map(esc).join(', ')}${inter.length?' (with interaction)':''}`,
           headers:[{t:'Term'},{t:'B',it:true,num:true},{t:'SE',it:true,num:true},{t:'t',it:true,num:true},{t:'p',it:true,num:true},{t:`${ci} CI`,num:true}],
           rows,
           note:{
@@ -2342,6 +2447,7 @@ list(term = rownames(co), est = co[,1], se = co[,2], tval = co[,3], pval = co[,4
       { key:'grp',  kind:'group_anova', label:'Group — 3 to 12 levels' }
     ],
     defaults: { resp:'weight', grp:'feed' },
+    check: cols => groupCheck(cols, { spread:'each', what:"Welch's ANOVA" }),
     rProgram: FIND_NCP + `
 # Hedges' g*s with a noncentral-t CI, identical to the two-sample module (ind_means),
 # so each pairwise g*s here matches running that pair through the two-sample module.
@@ -2433,9 +2539,9 @@ list(lv = lv, ns = ns, ms = ms, ss = ss, k = k, qq = qq_drawn,
         const cap = await shelter.captureR(this.rProgram, { env, captureGraphics:{ width:820, height:460 } });
         const consoleText = cap.output.filter(o=>o.type==='stdout'||o.type==='stderr').map(o=>o.data).join('\n');
         const R = rlistToObj(await cap.result.toJs());
-        const grp=cols.grp, resp=cols.resp, ci=pct(env.conf);
+        const grp=esc(cols.grp), resp=esc(cols.resp), ci=pct(env.conf);
         const ciPct = Math.round((2*env.conf - 1)*100), aTxt = nz(env.siglev, 2);
-        const k=R.k[0], lv=R.lv;
+        const k=R.k[0], lv=R.lv.map(esc);
         const pcell = pCell;
         // Descriptives take their precision from the smallest SE of a group mean;
         // the Games-Howell column from the smallest SE of a pairwise difference.
@@ -2458,7 +2564,7 @@ list(lv = lv, ns = ns, ms = ms, ss = ss, k = k, qq = qq_drawn,
         const ghRows = [];
         for(let r=0;r<R.gd.length;r++){
           ghRows.push([
-            {t:`${String(R.gi[r])} \u2212 ${String(R.gj[r])}`},
+            {t:`${esc(R.gi[r])} \u2212 ${esc(R.gj[r])}`},
             {t:f2(R.gd[r],Dd),num:true},
             {t:`[${f2(R.glo[r],Dd)}, ${f2(R.ghi[r],Dd)}]`,num:true},
             {t:f2(R.gt[r]),num:true},
@@ -2487,7 +2593,7 @@ list(lv = lv, ns = ns, ms = ms, ss = ss, k = k, qq = qq_drawn,
           htmlTable: main.copyHtml + '<br>' + t2.copyHtml
         };
         const plotCaps = (R.qq && R.qq[0]===1 ? ['Normal Q-Q of residuals (each residual divided by its group SD)'] : [])
-          .concat([`Boxplots of ${resp} by ${grp} (diamond = group mean)`]);
+          .concat([`Boxplots of ${cols.resp} by ${cols.grp} (diamond = group mean)`]);
         renderPlotsInto(cap.images || [], plotCaps);
         document.getElementById('outStep').classList.remove('hidden');
         const methodNote = `<b>Why these methods.</b> Welch's <i>F</i> is the default because the classical <i>F</i> is not robust to unequal variances and pretesting them does not help (Delacre, Leys, Mora &amp; Lakens, 2019). Games-Howell is the matching post hoc under unequal variances and <i>n</i>'s (Games &amp; Howell, 1976; Sauder &amp; DeMars, 2019), and it runs unconditionally: it controls the familywise error rate on its own, so it needs no significant omnibus <i>F</i> first (Bernhardson, 1975; Hayter, 1986). Adjusted \u03C9\u00B2 (Albers &amp; Lakens, 2018) incorporates Welch's corrected df. At &alpha; = ${aTxt} the \u03C9\u00B2 interval is shown as a ${ciPct}% CI: because the <i>F</i> test is one-sided, a ${ciPct}% two-sided interval corresponds to the test at &alpha; = ${aTxt} (Steiger, 2004; Lakens, 2013). The \u03C9\u00B2 interval inverts a noncentral <i>F</i> on Welch df, exact under equal variances and an accepted approximation otherwise. Each comparison also reports Hedges' <i>g*</i><sub>s</sub>, computed exactly as in the two-sample module (non-pooled standardizer, small-sample correction, noncentral-<i>t</i> interval; Delacre et al., 2021), so it matches running that pair on its own. Its interval is deliberately unadjusted: it estimates the size of that one difference rather than supporting a joint decision, and the familywise decision is already made by the Games-Howell <i>p</i>-values and simultaneous intervals. Read the <i>g*</i><sub>s</sub> interval as a per-comparison estimate; an interval that excludes zero next to a nonsignificant Games-Howell <i>p</i>-value is the multiplicity adjustment made visible, not a contradiction. <b>Checking normality.</b> The assumption concerns the residuals (each value minus its group mean), not the raw outcome, so the Q-Q plot pools the residuals from every group into one plot, which has far more points than a separate plot per group. Each residual is divided by its own group's <i>SD</i> so that unequal spreads, which Welch's test already allows, do not masquerade as heavy tails; the plot then checks only the shape. Points close to the line support normality; curvature at the ends suggests skewness, an S-shape suggests heavy or light tails, and isolated points far from the line are possible outliers. The boxplots show each group's center, spread, skewness, and outliers, which pooling can hide. With moderate to large groups Welch's <i>F</i> tolerates mild non-normality well.`;
@@ -2507,9 +2613,11 @@ list(lv = lv, ns = ns, ms = ms, ss = ss, k = k, qq = qq_drawn,
       { key:'grp',  kind:'group_med', label:'Group — 2 to 10 levels' }
     ],
     params: [
-      { key:'seed', type:'number', label:'Random seed (bootstrap resampling)', default:20260907 }
+      { key:'seed', type:'number', shortLabel:'random seed', label:'Random seed (bootstrap resampling)', default:20260907,
+        test: v => (Number.isInteger(v) && v >= 0 && v <= 2147483647) ? '' : 'The random seed must be a whole number from 0 to 2,147,483,647.' }
     ],
     defaults: { resp:'weight', grp:'feed' },
+    check: cols => groupCheck(cols),
     rProgram: `
 # Pairwise median differences by SMOOTHED PERCENTILE BOOTSTRAP.
 # Resampling is done once per GROUP, not once per pair: every pairwise
@@ -2547,7 +2655,7 @@ norm_inter <- function(ts, a) {
 # Two-sided p-value obtained by INVERTING the percentile interval above: the
 # smallest alpha at which the interval excludes the null value, doubled. The
 # bootstrap distribution of a median difference is skewed, so a symmetric
-# "how far from centre" p-value and an equal-tailed percentile interval are
+# "how far from center" p-value and an equal-tailed percentile interval are
 # different events and can disagree. Inverting makes them the same event, so a
 # Bonferroni p below alpha corresponds to an interval excluding zero exactly,
 # and under Holm only the informative disagreement remains possible (interval
@@ -2592,7 +2700,7 @@ if (bonf_on) {
 if (k > 5)
   cat("NOTE: this method was validated by simulation for k = 2 to 5 groups. With ",
       k, " groups (", m, " comparisons) the intervals are wider and the\\n",
-      "      familywise behaviour has not been checked directly.\\n\\n", sep = "")
+      "      familywise behavior has not been checked directly.\\n\\n", sep = "")
 
 gi <- character(0); gj <- character(0)
 est <- numeric(0); se <- numeric(0); zv <- numeric(0)
@@ -2650,8 +2758,8 @@ list(lv = lv, ns = ns, mds = mds, k = k, m = m, se = se,
         const cap = await shelter.captureR(this.rProgram, { env });
         const consoleText = cap.output.filter(o=>o.type==='stdout'||o.type==='stderr').map(o=>o.data).join('\n');
         const R = rlistToObj(await cap.result.toJs());
-        const grp=cols.grp, resp=cols.resp, ci=pct(env.conf);
-        const k=R.k[0], m=R.m[0], lv=R.lv;
+        const grp=esc(cols.grp), resp=esc(cols.resp), ci=pct(env.conf);
+        const k=R.k[0], m=R.m[0], lv=R.lv.map(esc);
         const MB = multBits(multOn(env), m, ci);
         const pcell = pCell;
         // Bootstrap SEs of the pairwise differences; the medians are in the same units.
@@ -2671,7 +2779,7 @@ list(lv = lv, ns = ns, mds = mds, k = k, m = m, se = se,
         const pairRows = [];
         for(let r=0;r<m;r++){
           pairRows.push([
-            {t:`${String(R.gi[r])} \u2212 ${String(R.gj[r])}`},
+            {t:`${esc(R.gi[r])} \u2212 ${esc(R.gj[r])}`},
             {t:f2(R.est[r],D),num:true},
             {t:`[${f2(R.lo[r],D)}, ${f2(R.hi[r],D)}]`,num:true},
             {t:isNum(R.zv[r])?f2(R.zv[r]):'\u2014',num:true},
@@ -2708,7 +2816,7 @@ list(lv = lv, ns = ns, mds = mds, k = k, m = m, se = se,
           ? `<b>What the box does.</b> Ticked, the <i>p</i>-values and the intervals carry the same single-step Bonferroni adjustment. Each interval is computed at the ${pctFine(1-(1-env.conf)/m)} level rather than ${pct(env.conf)}, so the ${m} of them hold <i>jointly</i> at ${pct(env.conf)}: across repeated samples, all ${m} intervals contain their true differences about ${pct(env.conf)} of the time. Because the same adjustment is applied to both, an adjusted <i>p</i>-value below ${nz(env.siglev,2)} always corresponds to an interval excluding zero, and the two cannot disagree. The cost is width: each interval is wider than a ${pct(env.conf)} interval for one comparison on its own, and that width is the price of the joint claim. Unticking returns the default, Holm-adjusted <i>p</i>-values with unadjusted per-comparison intervals.`
           : `<b>What the box does.</b> Unticked (the default), the <i>p</i>-values are Holm-adjusted across all ${m} comparisons and control the familywise error rate, while each interval is an unadjusted ${pct(env.conf)} interval for its own comparison and carries no joint claim. Holm is at least as powerful as Bonferroni (Holm, 1979), but it has no matching simultaneous interval, which is why the intervals stay per-comparison. So an interval may exclude zero while the adjusted <i>p</i>-value does not reject: that comparison would have been significant on its own but does not survive the correction for multiplicity. Ticking the box puts both on one single-step Bonferroni footing, so all ${m} intervals hold jointly at ${pct(env.conf)} and test and interval agree by construction.`);
         const kWarn = (k > 5)
-          ? ` <b>Number of groups.</b> The simulation evidence behind this module covers 2 to 5 groups; you have ${k}, giving ${m} comparisons. The method is not expected to break, but its familywise behaviour at this ${k} has not been checked directly and the intervals widen quickly. The module accepts at most 10 groups.`
+          ? ` <b>Number of groups.</b> The simulation evidence behind this module covers 2 to 5 groups; you have ${k}, giving ${m} comparisons. The method is not expected to break, but its familywise behavior at this ${k} has not been checked directly and the intervals widen quickly. The module accepts at most 10 groups.`
           : ``;
         const methodNote = `<b>Why this analysis.</b> This estimates the difference between group <i>medians</i>, a location shift in the outcome's own units, which is the right estimand for interval/ratio outcomes when means are not the target. (The Brunner-Munzel and MCTP modules test stochastic dominance, not medians; Divine et al., 2018.) <b>How it is computed.</b> A <b>smoothed percentile bootstrap</b>: each group is resampled 2,000 times, a small amount of kernel noise is added to every resample, and the interval is read off the percentiles of the resulting distribution of median differences (Silverman &amp; Young, 1987). The point estimate is the ordinary difference of sample medians; smoothing affects only the interval. <b>Why smoothed.</b> The bootstrap distribution of a median is atomic, since a resample median can only take values already present in the sample, and when data are recorded on a coarse scale, such as whole numbers or a rating scale, that lattice makes several standard methods fail, some of them <i>worse</i> as the sample grows. Kernel smoothing breaks the lattice. In simulation across skewed populations and rounding levels this approach held its coverage where quantile-regression standard errors, Bonett-Price, and BCa did not. <b>Reproducibility.</b> Resampling uses the seed shown in the setup panel, so the same data and the same seed give identical output; change the seed to see how far the last digits move. ${mLead}${kWarn} <b>The omnibus</b> tests <i>H</i><sub>0</sub>: all ${k} group medians are equal, using a weighted sum of squared deviations of the group medians with weights from the bootstrap variances, and a null distribution obtained by centring each group at its own median and resampling. Because the groups are independent samples the covariance of the medians is diagonal, so no matrix inversion is involved. It is reported as a subordinate, <i>non-gating</i> summary: the pairwise comparisons are read directly and never conditioned on it (Sauder &amp; DeMars, 2019). A significant omnibus with no single significant pair signals a difference spread diffusely across groups. <b>Assumptions.</b> Independent observations within and between groups, and a uniquely defined population median in each group. Nothing is assumed about shape, spread, or equality of either across groups. One caveat worth knowing: when groups differ markedly in spread the familywise error rate rises somewhat, so a large ratio between the largest and smallest group IQR is worth noticing.`;
         const mn=document.getElementById('methodNote'); mn.innerHTML=methodNote; mn.classList.remove('hidden');
@@ -2726,12 +2834,22 @@ list(lv = lv, ns = ns, mds = mds, k = k, m = m, se = se,
     ],
     packages: ['mvtnorm','multcomp','survival','nparcomp'],
     defaults: { resp:'weight', grp:'feed' },
+    check: cols => groupCheck(cols),
     rProgram: `
 suppressMessages(library(nparcomp))
 d <- data.frame(y = as.numeric(resp), g = factor(grp))
 lv <- levels(d$g); k <- length(lv)
 ns <- as.numeric(tapply(d$y, d$g, length))
 cl <- (2*conf - 1)  # mctp 'conf.level' is the simultaneous coverage; pass user level directly below
+# Fixed seed. The simultaneous intervals and adjusted p-values come from a multivariate-t
+# probability that the mvtnorm package evaluates by randomized numerical integration, so
+# without a seed the same data give slightly different digits from one run to the next
+# (and the digits depend on what was run earlier in the session). The randomness is
+# integration error, not resampling of the data, so the seed is fixed here rather than
+# offered as a setting, the same way the Monte Carlo fallbacks in the Fisher and exact
+# multinomial modules are seeded.
+mctp_seed <- 20260507
+set.seed(mctp_seed)
 res <- tryCatch(
   mctp(y ~ g, data = d, type = "Tukey", conf.level = conf, info = FALSE, asy.method = "mult.t", rounds = 10),
   error = function(e) e)
@@ -2754,6 +2872,7 @@ if (inherits(res, "error")) {
   om <- res$Overall$p.Value[1]; omq <- res$Overall$Quantile[1]
   cat("Pairwise rank-based contrasts (relative effects, Tukey-type all-pairwise)\\n")
   cat(sprintf("Groups: %s\\n", paste(lv, collapse=", ")))
+  cat(sprintf("Seed for the multivariate-t integration: %d (fixed, so the same data always give the same output)\\n", mctp_seed))
   cat(sprintf("BDM-type omnibus (MCTP, multivariate-t): critical quantile = %.4f, p = %.5g\\n\\n",
       omq, om))
   for (r in seq_along(est)) {
@@ -2794,8 +2913,8 @@ if (inherits(res, "error")) {
           setStatus('Done, with a note (see results).');
           return;
         }
-        const grp=cols.grp, resp=cols.resp, ci=pct(env.conf);
-        const k=R.k[0], lv=R.lv, m=R.est.length;
+        const grp=esc(cols.grp), resp=esc(cols.resp), ci=pct(env.conf);
+        const k=R.k[0], lv=R.lv.map(esc), m=R.est.length;
         const pcell = pCell;
         // relative effects vs the unweighted average of the group distributions (with per-group simultaneous CIs)
         const rows = lv.map((g,i)=>[
@@ -2845,7 +2964,7 @@ if (inherits(res, "error")) {
           htmlTable: main.copyHtml + paraCopy(omHtml) + '<br>' + t2.copyHtml
         };
         document.getElementById('outStep').classList.remove('hidden');
-        const methodNote = `<b>Why this analysis.</b> This is the <i>k</i>-group rank-based analogue of the Brunner-Munzel test, and the nonparametric counterpart to Welch's ANOVA; it assumes neither equal variances nor equal distribution shapes, and it is valid for ordinal as well as interval/ratio outcomes. The <b>omnibus</b> tests <i>H</i>\u2080: all groups have equal relative effects (each group is equally likely to rank high or low against the average of the group distributions), in the spirit of Brunner, Dette &amp; Munk (1997); here it is the global multivariate-<i>t</i> test that accompanies the MCTP. It is reported as a subordinate, <i>non-gating</i> summary: the pairwise contrasts below control the familywise error rate on their own and are run unconditionally (Sauder &amp; DeMars, 2019). Each <b>pairwise contrast</b> is a difference in relative effects (a positive value means the second-named group tends to rank above the first, relative to the average of the group distributions), with simultaneous confidence intervals and multiplicity-adjusted <i>p</i>-values computed jointly from the multivariate <i>t</i>-distribution (the single-step MCTP of Konietschke, Hothorn &amp; Brunner, 2012), the rank-based parallel to Games-Howell. Because the omnibus and the contrasts are both framed on relative effects, they can occasionally disagree (a significant omnibus with no single significant contrast signals a diffuse effect spread across groups); this is informative, not contradictory. <b>The reference distribution.</b> Each relative effect compares a group to the <i>unweighted</i> average of all the group distributions, so every group counts equally whatever its sample size; a pooled (<i>n</i>-weighted) reference would let a large group pull the reference toward itself. <b>What a contrast is not.</b> A contrast is not the head-to-head probability of superiority. With <i>k</i> groups it averages comparisons against every group, so the third group's scores enter the comparison of the other two; with exactly two groups it equals that probability minus .50. For the direct question "how likely is a value from A to exceed a value from B?", use the pairwise Brunner-Munzel module. Brunner, Dette &amp; Munk (1997); Brunner &amp; Munzel (2000); Brunner, Konietschke, Pauly &amp; Puri (2017).`;
+        const methodNote = `<b>Why this analysis.</b> This is the <i>k</i>-group rank-based analogue of the Brunner-Munzel test, and the nonparametric counterpart to Welch's ANOVA; it assumes neither equal variances nor equal distribution shapes, and it is valid for ordinal as well as interval/ratio outcomes. The <b>omnibus</b> tests <i>H</i>\u2080: all groups have equal relative effects (each group is equally likely to rank high or low against the average of the group distributions), in the spirit of Brunner, Dette &amp; Munk (1997); here it is the global multivariate-<i>t</i> test that accompanies the MCTP. It is reported as a subordinate, <i>non-gating</i> summary: the pairwise contrasts below control the familywise error rate on their own and are run unconditionally (Sauder &amp; DeMars, 2019). Each <b>pairwise contrast</b> is a difference in relative effects (a positive value means the second-named group tends to rank above the first, relative to the average of the group distributions), with simultaneous confidence intervals and multiplicity-adjusted <i>p</i>-values computed jointly from the multivariate <i>t</i>-distribution (the single-step MCTP of Konietschke, Hothorn &amp; Brunner, 2012), the rank-based parallel to Games-Howell. Because the omnibus and the contrasts are both framed on relative effects, they can occasionally disagree (a significant omnibus with no single significant contrast signals a diffuse effect spread across groups); this is informative, not contradictory. <b>Reproducibility.</b> The multivariate-<i>t</i> probabilities behind the simultaneous intervals and adjusted <i>p</i>-values are evaluated by randomized numerical integration. The tool sets a fixed seed (20260507) before every run, so the same data always give exactly the same output; the seed affects only the last digits of the integration and is shown in the R console. <b>The reference distribution.</b> Each relative effect compares a group to the <i>unweighted</i> average of all the group distributions, so every group counts equally whatever its sample size; a pooled (<i>n</i>-weighted) reference would let a large group pull the reference toward itself. <b>What a contrast is not.</b> A contrast is not the head-to-head probability of superiority. With <i>k</i> groups it averages comparisons against every group, so the third group's scores enter the comparison of the other two; with exactly two groups it equals that probability minus .50. For the direct question "how likely is a value from A to exceed a value from B?", use the pairwise Brunner-Munzel module. Brunner, Dette &amp; Munk (1997); Brunner &amp; Munzel (2000); Brunner, Konietschke, Pauly &amp; Puri (2017).`;
         const mn=document.getElementById('methodNote'); mn.innerHTML=methodNote; mn.classList.remove('hidden');
         setStatus(`Done. ${used} rows used${dropped?`, ${dropped} dropped for missing values`:''}.`);
       } finally { await shelter.purge(); }
@@ -2862,6 +2981,7 @@ if (inherits(res, "error")) {
     ],
     packages: ['mvtnorm','multcomp','survival','nparcomp'],
     defaults: { resp:'weight', grp:'feed' },
+    check: cols => groupCheck(cols),
     rProgram: `
 suppressMessages(library(nparcomp))
 d <- data.frame(y = as.numeric(resp), g = factor(grp))
@@ -2942,8 +3062,8 @@ list(lv = lv, ns = ns, k = k, m = m,
         const consoleText = cap.output.filter(o=>o.type==='stdout'||o.type==='stderr').map(o=>o.data).join('\n');
         const R = rlistToObj(await cap.result.toJs());
         document.getElementById('console').textContent = consoleText;
-        const grp=cols.grp, resp=cols.resp, ci=pct(env.conf);
-        const k=R.k[0], m=R.est.length, lv=R.lv;
+        const grp=esc(cols.grp), resp=esc(cols.resp), ci=pct(env.conf);
+        const k=R.k[0], m=R.est.length, lv=R.lv.map(esc);
         const MB = multBits(multOn(env), m, ci);
         const pcell = p => (p==null || Number.isNaN(Number(p))) ? '\u2014' : (p < .001 ? '< .001' : nz(p,3));
         const fcell = x => (x==null || Number.isNaN(Number(x))) ? '\u2014' : f2(x);
@@ -2963,7 +3083,7 @@ list(lv = lv, ns = ns, k = k, m = m,
         for(let r=0;r<m;r++){
           const ciCell = (R.lo[r]==null||Number.isNaN(Number(R.lo[r]))) ? '\u2014' : `[${nz(R.lo[r])}, ${nz(R.hi[r])}]`;
           pairRows.push([
-            {t:`P(${String(R.gi[r])} &lt; ${String(R.gj[r])})`, p:`P(${String(R.gi[r])} < ${String(R.gj[r])})`},
+            {t:`P(${esc(R.gi[r])} &lt; ${esc(R.gj[r])})`, p:`P(${String(R.gi[r])} < ${String(R.gj[r])})`},
             {t:nzc(R.est[r]),num:true},
             {t:ciCell,num:true},
             {t:fcell(R.tv[r]),num:true},
@@ -3048,8 +3168,8 @@ list(p = ft$p.value, or = orv, orl = orl, oru = oru, is22 = is22, mc = 1 - exact
         const cap = await shelter.captureR(this.rProgram, { env });
         const consoleText = cap.output.filter(o=>o.type==='stdout'||o.type==='stderr').map(o=>o.data).join('\n');
         const R = rlistToObj(await cap.result.toJs());
-        const nr=R.nr[0], nc=R.nc[0], obs=R.obs, rowlab=R.rowlab, collab=R.collab;
-        const rowName=cols.row, colName=cols.col, ci=pct(env.cilev);
+        const nr=R.nr[0], nc=R.nc[0], obs=R.obs, rowlab=R.rowlab.map(esc), collab=R.collab.map(esc);
+        const rowName=esc(cols.row), colName=esc(cols.col), ci=pct(env.cilev);
         const pc = pctOpts();
         const headers=[{t:rowName}].concat(collab.map(c=>({t:String(c), num:true}))).concat([{t:'Total', num:true}]);
         const rows=crossRows(obs, nr, nc, rowlab, pc);
@@ -3131,7 +3251,7 @@ list(p = res$p.value, mc = mc, k = k, N = N, w = w,
         const cap = await shelter.captureR(this.rProgram, { env });
         const consoleText = cap.output.filter(o=>o.type==='stdout'||o.type==='stderr').map(o=>o.data).join('\n');
         const R = rlistToObj(await cap.result.toJs());
-        const k=R.k[0], lab=R.lab, obs=R.obs, exp=R.expv, varName=cols.variable;
+        const k=R.k[0], lab=R.lab.map(esc), obs=R.obs, exp=R.expv, varName=esc(cols.variable);
         const headers=[{t:varName},{t:'Observed',num:true},{t:'Expected',num:true}];
         const rows=[];
         const Ne = R.N[0];
@@ -3237,7 +3357,7 @@ list(a=a, b=b, cc=cc, d=d, n=n, nd=nd, pt=pt, ps=ps, D=D, DL=DL, DU=DU,
         const cap = await shelter.captureR(this.rProgram, { env });
         const consoleText = cap.output.filter(o=>o.type==='stdout'||o.type==='stderr').map(o=>o.data).join('\n');
         const R = rlistToObj(await cap.result.toJs());
-        const su = env.success, preName = cols.pre, postName = cols.post, ci = pct(env.cilev);
+        const su = esc(env.success), preName = esc(cols.pre), postName = esc(cols.post), ci = pct(env.cilev);
         const useex = R.useex[0]===1;
         // Wald SE of a difference between two correlated proportions, from the
         // discordant counts: sqrt(b + c - (b - c)^2/n)/n. The Newcombe paired interval
@@ -3245,7 +3365,7 @@ list(a=a, b=b, cc=cc, d=d, n=n, nd=nd, pt=pt, ps=ps, D=D, DL=DL, DU=DU,
         const nPairs = R.n[0], bD = R.b[0], cD = R.cc[0];
         const Dd = seDigits(nPairs > 0
           ? Math.sqrt(Math.max(0, bD + cD - Math.pow(bD - cD, 2)/nPairs))/nPairs : NaN);
-        const other = String(R.ot[0]);
+        const other = esc(R.ot[0]);
         const headers=[{t:`${preName} \\ ${postName}`},{t:String(su),num:true},{t:other,num:true}];
         const rows=[
           [{t:String(su)},{t:R.a[0],num:true},{t:R.b[0],num:true}],
@@ -3294,8 +3414,22 @@ let columns = {}, headers = [];
    "HW Mod 9 - Hypotheses, Type I, and Type II Error" and student names in
    "Last, First" form. A naive split shifts every column after the first such
    field, and shifts the header row by a different amount than the data rows. */
+// The separator is whichever of comma, semicolon or tab occurs most often in the
+// header line outside quotes, so a semicolon- or tab-separated export is read as
+// columns instead of as one wide column. Comma wins a tie.
+function sniffDelim(text){
+  const count = {',':0, ';':0, '\t':0}; let q = false;
+  for(let i=0;i<text.length;i++){
+    const c = text[i];
+    if(c === '"') q = !q;
+    else if(!q && (c === '\n' || c === '\r')) break;
+    else if(!q && c in count) count[c]++;
+  }
+  return count[';'] > count[','] && count[';'] >= count['\t'] ? ';' : (count['\t'] > count[','] ? '\t' : ',');
+}
 function parseCSV(text){
   text = text.replace(/^\uFEFF/,'');
+  const delim = sniffDelim(text);
   const rows=[]; let row=[], field='', quoted=false;
   for(let i=0;i<text.length;i++){
     const c=text[i];
@@ -3304,7 +3438,7 @@ function parseCSV(text){
       else field+=c;                       // commas and newlines are literal here
     }
     else if(c==='"'){ quoted=true; }
-    else if(c===','){ row.push(field); field=''; }
+    else if(c===delim){ row.push(field); field=''; }
     else if(c==='\n'||c==='\r'){
       if(c==='\r'&&text[i+1]==='\n') i++;
       row.push(field); rows.push(row); row=[]; field='';
@@ -3476,11 +3610,41 @@ fileInput.addEventListener('change',e=>{
   e.target.value = '';
 });
 
+// Columns that look like numbers but are not usable as numbers, with an example value,
+// so a column missing from the numeric lists is explained rather than just absent.
+function nearNumericNote(){
+  const notes = [];
+  headers.forEach(h=>{
+    const vals = columns[h].filter(v=>!isNA(v));
+    if(!vals.length || isNumericCol(columns[h])) return;
+    const clean = v => String(v).replace(/[$%\s]/g,'').replace(/,(?=\d{3}(\D|$))/g,'').replace(/^(-?\d+),(\d+)$/,'$1.$2');
+    const bad = vals.filter(v=>!Number.isFinite(Number(v)));
+    const fixable = bad.filter(v=>{ const c = clean(v); return c !== '' && Number.isFinite(Number(c)); });
+    if(fixable.length && fixable.length === bad.length) notes.push(`${h} (values such as "${String(fixable[0]).trim()}")`);
+  });
+  return notes.length
+    ? `Not usable as numbers, so not offered where a numeric column is needed: ${notes.join('; ')}. Remove thousands separators, currency signs and percent signs in the file, and use a period as the decimal mark.`
+    : '';
+}
 function handleFile(file){
   document.getElementById('filename').textContent = file.name;
+  const warn = document.getElementById('fileWarn'); warn.textContent = '';
+  const reject = msg => {
+    headers = []; columns = {}; clearOutput();
+    roleStep.classList.add('hidden'); warn.textContent = msg;
+  };
   const r=new FileReader();
-  r.onload=()=>{ const {hdr,cols}=parseCSV(r.result); headers=hdr; columns=cols;
+  r.onload=()=>{
+    const text = String(r.result);
+    // A workbook is a zip archive ("PK"); the old .xls format starts with D0 CF.
+    if(/\.(xlsx|xlsm|xls|ods|numbers)$/i.test(file.name) || text.startsWith('PK\x03\x04') || text.startsWith('\xD0\xCF'))
+      return reject('This looks like a spreadsheet workbook, not a CSV file. In Excel choose File, then Save As, pick "CSV (Comma delimited)", and upload the file that creates.');
+    const {hdr,cols}=parseCSV(text);
+    if(!hdr.length || !cols[hdr[0]].length)
+      return reject('No data rows were found in this file. The first row must hold the column names and the rows below it the data.');
+    headers=hdr; columns=cols;
     clearOutput();   // results from the previous file must not stay on screen
+    warn.textContent = nearNumericNote();
     if(TESTS[testSel.value]){ renderRoles(); roleStep.classList.remove('hidden'); } };
   r.readAsText(file);
 }
@@ -3505,12 +3669,12 @@ function renderRoles(){
       // Checkbox list (easier than a multiple <select> on touch screens). The first
       // eligible column starts checked; order follows the CSV's column order.
       const boxes = eligible('numeric').map((h,i)=>
-        `<label class="chk"><input type="checkbox" data-role-multi="${role.key}" value="${String(h).replace(/"/g,'&quot;')}"${i===0?' checked':''}> ${h}</label>`).join('');
+        `<label class="chk"><input type="checkbox" data-role-multi="${role.key}" value="${esc(h)}"${i===0?' checked':''}> ${esc(h)}</label>`).join('');
       return `<div><label class="fld" id="role_${role.key}_lbl">${role.label}</label>
               <div class="multipick" role="group" aria-labelledby="role_${role.key}_lbl">${boxes||'(no eligible column)'}</div></div>`;
     }
     const opts = eligible(role.kind);
-    let list = opts.map(h=>`<option>${h}</option>`).join('');
+    let list = opts.map(h=>`<option>${esc(h)}</option>`).join('');
     if(role.optional) list = `<option value="">— none —</option>` + list;
     return `<div><label class="fld" for="role_${role.key}">${role.label}</label>
             <select data-role="${role.key}" id="role_${role.key}">${list||'<option value="">(no eligible column)</option>'}</select></div>`;
@@ -3557,6 +3721,7 @@ function renderRoles(){
   validate();
 }
 
+const INTER_SEP = '\x1f';   // joins the column names of one interaction term
 function mlrPopulateCustom(){
   const wrap = document.getElementById('mlrCustom'); if(!wrap) return;
   const preds = ['predictor1','predictor2','predictor3','predictor4']
@@ -3569,8 +3734,8 @@ function mlrPopulateCustom(){
   const prev = new Set([...wrap.querySelectorAll('input:checked')].map(c=>c.value));
   wrap.innerHTML = combos.length
     ? '<div class="fld" style="margin-bottom:6px">Interaction terms to include</div>' + combos.map(c=>{
-        const v=c.join('|'), lab=c.join(' \u00D7 ');
-        return `<label style="display:inline-flex;align-items:center;gap:6px;margin:2px 12px 2px 0;font-weight:400"><input type="checkbox" data-inter value="${v}"${prev.has(v)?' checked':''}> ${lab}</label>`;
+        const v=c.join(INTER_SEP), lab=c.map(esc).join(' \u00D7 ');
+        return `<label style="display:inline-flex;align-items:center;gap:6px;margin:2px 12px 2px 0;font-weight:400"><input type="checkbox" data-inter value="${esc(v)}"${prev.has(v)?' checked':''}> ${lab}</label>`;
       }).join('')
     : '<span class="hint">Select at least two predictors to form interactions.</span>';
 }
@@ -3648,7 +3813,7 @@ function updateLevelParams(){
     // A required level parameter starts blank and keeps Run disabled until the
     // user chooses a level, so the choice is made on purpose, not by default.
     const blank = pp.required ? '<option value="">Choose...</option>' : '';
-    sel.innerHTML = blank + lv.map(l=>`<option>${l}</option>`).join('');
+    sel.innerHTML = blank + lv.map(l=>`<option>${esc(l)}</option>`).join('');
     if(lv.includes(prev)) sel.value = prev;
     else if(pp.required) sel.value = '';
     else if(pp.default==='last' && lv.length) sel.value = lv[lv.length-1];
@@ -3671,10 +3836,10 @@ function updateLevelHint(){
       const r = parseProps(pEl.value, lv.length);
       const f = x => String(+x.toFixed(4));
       if(r.blank) use = `<br>Expected proportions that will be used: equal, ${f(1/lv.length)} for each category.`;
-      else if(r.nums) use = `<br>Expected proportions that will be used: ${lv.map((x,i)=>`${x} = ${f(r.props[i])}`).join(', ')}.`
+      else if(r.nums) use = `<br>Expected proportions that will be used: ${lv.map((x,i)=>`${esc(x)} = ${f(r.props[i])}`).join(', ')}.`
         + (r.rescaled ? ` Your values sum to ${sumTxt(r.sum)}, not 1, so each was divided by ${sumTxt(r.sum)}.` : '');
     }
-    el.innerHTML = `Categories in order: ${lv.map(x=>`<b>${x}</b>`).join(', ')}.<br>This order is alphabetical, which matches R for ordinary text or number-coded labels. If labels ever have unusual capitalization or leading symbols, R's ordering (shown in the output table) is the authoritative one.${use}`;
+    el.innerHTML = `Categories in order: ${lv.map(x=>`<b>${esc(x)}</b>`).join(', ')}.<br>This order is alphabetical, which matches R for ordinary text or number-coded labels. If labels ever have unusual capitalization or leading symbols, R's ordering (shown in the output table) is the authoritative one.${use}`;
   } else { el.textContent=''; }
 }
 
@@ -3736,7 +3901,17 @@ function validate(){
     if((pp.type||'number')!=='number') continue;
     const el = rolesContainer.querySelector(`[data-param="${pp.key}"]`);
     if(pp.optional && el && el.value==='') continue;
-    if(!el || el.value==='' || !Number.isFinite(Number(el.value))){ ok=false; }
+    if(!el || el.value==='' || !Number.isFinite(Number(el.value))){
+      ok=false; if(!msg) msg = `Enter a number for the ${pp.shortLabel || pp.key}.`;
+    } else if(pp.test){
+      const m = pp.test(Number(el.value));
+      if(m){ ok=false; if(!msg) msg = m; }
+    }
+  }
+  // A counts column must hold counts.
+  if(cols.counts && columns[cols.counts]){
+    const bad = columns[cols.counts].find(v=>!isNA(v) && !(Number.isInteger(Number(v)) && Number(v) >= 0));
+    if(bad !== undefined){ ok=false; if(!msg) msg = `The counts column must contain whole numbers of 0 or more; ${cols.counts} contains "${String(bad).trim()}".`; }
   }
   // Modules declaring multGroupRole hide the multiplicity box when the chosen
   // grouping column yields a single comparison: with m = 1, Bonferroni, Holm
@@ -3767,7 +3942,7 @@ function clearOutput(){
 }
 function runFailed(e){
   clearOutput();
-  setStatus('R error: ' + e.message, {err:true});
+  setStatus(friendlyError(e.message), {err:true});
 }
 ['change','input'].forEach(ev=>roleStep.addEventListener(ev, e=>{
   // The EDA palette and extra-plot switches redraw the plots themselves.
@@ -3840,8 +4015,11 @@ runBtn.addEventListener('click', async ()=>{
     const vals = await cap.result.toArray();
     const R={}; t.resultKeys.forEach((k,i)=>R[k]=vals[i]);
 
-    const ctx = { cols, levels:{}, conf: env.cilev, env };   // renders label intervals with ctx.conf
-    t.roles.forEach(role=>{ if(role.kind==='group2') ctx.levels[role.key]=levelsOf(columns[cols[role.key]]).sort(); });
+    // Renders build HTML, so every name and label they receive is escaped here. The raw
+    // values stay available as ctx.raw for anything that must look a column up.
+    const escObj = o => Object.fromEntries(Object.entries(o).map(([k,v])=>[k, typeof v === 'string' ? esc(v) : v]));
+    const ctx = { cols: escObj(cols), levels:{}, conf: env.cilev, env: escObj(env), raw:{ cols, env } };   // renders label intervals with ctx.conf
+    t.roles.forEach(role=>{ if(role.kind==='group2') ctx.levels[role.key]=levelsOf(columns[cols[role.key]]).sort().map(esc); });
 
     const out = t.render(R, ctx);
     document.getElementById('console').textContent = consoleText;
@@ -3860,18 +4038,21 @@ runBtn.addEventListener('click', async ()=>{
     document.getElementById('outStep').classList.remove('hidden');
     const mn=document.getElementById('methodNote');
     if(t.methodNote){ mn.innerHTML=t.methodNote; mn.classList.remove('hidden'); } else { mn.classList.add('hidden'); }
-    setStatus(`Done. ${used} rows analysed${dropped?`, ${dropped} dropped for missing values`:''}.`);
+    setStatus(`Done. ${used} rows used${dropped?`, ${dropped} dropped for missing values`:''}.`);
   }catch(e){ runFailed(e); }
   finally{ await shelter.purge(); runBtn.disabled=false; }
 });
 
 /* ============================ copy ============================ */
-function wireCopy(btnId, getPayload, label='Copy table'){
+// Names are HTML-escaped for the page; the plain-text copy gets the characters back.
+const unesc = s => String(s).replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"').replace(/&amp;/g,'&');
+function wireCopy(btnId, getPayload, label='Copy table', decode=true){
   const btn = document.getElementById(btnId);
   if(!btn) return;
   btn.addEventListener('click', async ()=>{
-    const payload = getPayload();
+    let payload = getPayload();
     if(!payload) return;
+    if(decode) payload = { htmlTable: payload.htmlTable, plain: unesc(payload.plain) };
     try{
       if(navigator.clipboard && window.ClipboardItem){
         await navigator.clipboard.write([new ClipboardItem({
@@ -3895,7 +4076,7 @@ wireCopy('consoleCopyBtn', ()=>{
   return { plain: t,
            htmlTable: `<pre style="font-family:Consolas,'Courier New',monospace;`
                     + `font-size:9pt;white-space:pre;margin:0;">${esc(t)}</pre>` };
-}, 'Copy console');
+}, 'Copy console', false);
 </script>
 </body>
 </html>

@@ -16,7 +16,8 @@ or ordinal data such instruments routinely produce.
 **Exploratory data analysis.** Summary statistics plus histogram, boxplot, and normal Q-Q plots,
 optionally split by group, with a scatterplot when a second numeric variable is supplied.
 
-**One-sample.** *t* test for a mean; *z* test for a proportion.
+**One-sample.** *t* test for a mean; *z* test for a proportion; exact distribution-free confidence
+interval for a median.
 
 **Two-sample, dependent.** Paired *t* test for a mean difference (repeated measures or matched
 pairs); McNemar's test for a difference between paired proportions.
@@ -33,7 +34,7 @@ expected counts; independence and homogeneity; Fisher's exact test.
 **ANOVA.** One-way Welch's ANOVA with Games-Howell pairwise comparisons.
 
 **All pairwise differences.** Proportion differences (Newcombe); median differences (smoothed
-percentile bootstrap); group standing in the combined sample (rank-based, MCTP); head-to-head rank
+percentile bootstrap); group standing across all groups (rank-based, MCTP); head-to-head rank
 comparisons (pairwise Brunner-Munzel).
 
 ## Browser requirements
@@ -139,10 +140,15 @@ cross-origin-isolation headers WebR needs. Normal and expected.
 
 - First load downloads the R runtime (~30 MB) from the WebR CDN; it is cached afterward.
 - Some analyses install additional R packages on first use, which adds a one-time download.
+- Analyses that use random numbers are seeded so that the same data give the same output. The
+  bootstrap modules show their seed as a setting. The MCTP module, and the Monte Carlo fallbacks
+  in Fisher's exact test and the exact multinomial test, use a fixed seed (20260507) set in
+  `index.html`.
 - The WebR version is pinned in `index.html` rather than tracking `latest`, so the runtime
   cannot change mid-semester. WebR releases have moved R versions and broken package
   binary compatibility. Bump the pin between terms, then retest Welch's *t*, an EDA with
   plots, and a chi-square before deploying.
-- Try it with `independent_means_-_babies.csv` (response `bwt`, group `smoke`).
+- Any CSV with a header row works. A semicolon- or tab-separated file is also read; an Excel
+  workbook must first be saved as CSV.
 - For production, hosting on Cloudflare Pages with a `_headers` file setting COOP/COEP removes the
   need for `coi-serviceworker` and the first-visit reload.
