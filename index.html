@@ -346,8 +346,17 @@ const seDiffProp = (p1,n1,p2,n2) => Math.sqrt(Math.pow(seProp(p1,n1),2) + Math.p
 // Shared body for f2/nz. A nonzero value too small to show at d decimals is
 // reported as a bound at the last decimal place rather than as a row of zeros,
 // because "0.00" next to a significant p is a false statement about the estimate.
+// R's NA and NaN arrive from WebR as null. Number(null) is 0 and (null < .001) is
+// true, so without this guard an undefined statistic would print as 0.00 or as
+// "p < .001". Anything missing is shown as NA and explained under the table.
+const isNum = x => x !== null && x !== undefined && x !== '' && Number.isFinite(Number(x));
+const NA_TXT = 'NA';
+const naFlag = () => addFlag('na',
+  `<b>Not computable.</b> At least one statistic is undefined for these data and is shown as NA. Common causes are a group with no variation, two groups whose proportions are both exactly 0 or both exactly 1, and groups that do not overlap at all. The R console has the details.`);
 function fmtNum(x, d, lead){
-  const v = Number(x); if(!Number.isFinite(v)) return String(x);
+  if(x === null || x === undefined || x === '' || Number.isNaN(Number(x))){ naFlag(); return NA_TXT; }
+  const v = Number(x);
+  if(!Number.isFinite(v)) return (v < 0 ? MINUS : '') + '\u221E';
   const unit = Math.pow(10, -d);
   let s, pre = '';
   if(v !== 0 && Math.abs(v) < unit/2){
@@ -370,10 +379,12 @@ const f2 = (x, d=2) => fmtNum(x, d, true);
 const nz = (x, d=2) => fmtNum(x, d, false);
 // df: integer when the df is an integer (one-sample, paired, chi-square),
 // two decimals when it is fractional (Welch, Brunner-Munzel).
-const fdf = (x)=>{ const v=Number(x); if(!Number.isFinite(v)) return String(x);
+const fdf = (x)=>{ if(!isNum(x)){ naFlag(); return NA_TXT; } const v=Number(x);
   return Math.abs(v-Math.round(v)) < 1e-8 ? String(Math.round(v)) : v.toFixed(2); };
 const pct = (c)=> Math.round(Number(c)*100)+'%';
-const pFmt = p => p < .001 ? '< .001' : '= ' + nz(p,3);
+const pFmt = p => !isNum(p) ? (naFlag(), '= ' + NA_TXT) : p < .001 ? '< .001' : '= ' + nz(p,3);
+// p-value for a table cell (no leading "=").
+const pCell = p => !isNum(p) ? (naFlag(), NA_TXT) : p < .001 ? '< .001' : nz(p,3);
 
 /* ===== percentages under counts =====
    One decimal by default (3 of 1,000 is 0.3%). Only a percentage that one decimal would round to
@@ -424,6 +435,34 @@ function pctNote(pc){
   const last = nm.pop();
   return ` Cell entries are counts; the percentages in parentheses below each count are, in order, ${nm.join(', ')}${nm.length>1?',':''} and ${last} percentages.`;
 }
+
+/* ===== expected proportions (goodness-of-fit modules) =====
+   Parses the comma-separated box. Blank means equal proportions. Anything else must be
+   one positive number per category; otherwise Run stays disabled with the reason shown.
+   Values that do not sum to 1 are accepted (ratios such as 9, 3, 3, 1 are legitimate)
+   but the rescaling is stated on the page and in the table note. */
+function parseProps(str, k){
+  const s = String(str == null ? '' : str).trim();
+  if(s === '') return { blank:true };
+  const vals = s.split(',').map(v=>v.trim());
+  if(vals.some(v=> v === '' || !Number.isFinite(Number(v))))
+    return { err:'Expected proportions must be numbers separated by commas, for example 0.25, 0.45, 0.10, 0.20. Do not use % signs, semicolons, or other symbols.' };
+  const nums = vals.map(Number);
+  if(nums.some(v=> v <= 0)) return { err:'Each expected proportion must be greater than 0.' };
+  if(k && nums.length !== k)
+    return { err:`You entered ${nums.length} expected proportion${nums.length===1?'':'s'}, but the variable has ${k} categories. Enter one per category, in the category order shown below, or leave the box blank for equal proportions.` };
+  const sum = nums.reduce((a,b)=>a+b, 0);
+  return { nums, sum, rescaled: Math.abs(sum - 1) > 1e-9, props: nums.map(v=>v/sum) };
+}
+const propsCheck = (cols, pv) => {
+  const v = cols.variable;
+  if(!v || !columns[v]) return '';
+  const r = parseProps(pv.propstr, levelsOf(columns[v]).length);
+  return r.err || '';
+};
+const sumTxt = x => String(+Number(x).toPrecision(10));
+const propsNote = (str, k) => { const r = parseProps(str, k);
+  return (r.nums && r.rescaled) ? ` The expected values entered sum to ${sumTxt(r.sum)}, not 1, so each was divided by ${sumTxt(r.sum)} to give the expected proportions.` : ''; };
 
 /* ============================ APA table builder ============================ */
 // headers: [{t, it, num}]   rows: [[{t, num}, ...]]   note: {html, plain}
@@ -861,7 +900,7 @@ c(t=t.obs, df=df, p=tt$p.value, md=md, cil=tt$conf.int[1], ciu=tt$conf.int[2],
     ],
     sided: true,
     defaults: { resp:'bwt', grp:'smoke' },
-    resultKeys: ['stat','df','p','phat','cil','ciu','n1','md1','n2','md2'],
+    resultKeys: ['stat','df','p','phat','cil','ciu','n1','md1','n2','md2','sep'],
     rProgram: `
 d <- data.frame(resp = as.numeric(resp), grp = factor(grp))
 lv <- levels(d$grp)
@@ -881,6 +920,10 @@ p <- switch(alt,
   2*pt(abs(stat), df, lower.tail = FALSE))
 # Always two-sided: at 1 - alpha for a two-sided test, 1 - 2*alpha for a one-sided one.
 ci <- pst + c(-1,1)*qt(1 - (1-cilev)/2, df)*se
+# Zero standard error: the two samples do not overlap at all (or every value is tied).
+# The statistic, df, p-value and interval are then undefined, not zero.
+sepr <- as.numeric(!is.finite(se) || se <= 0)
+if (sepr == 1) { stat <- NA_real_; df <- NA_real_; p <- NA_real_; ci <- c(NA_real_, NA_real_) }
 cat("\\n\\tBrunner-Munzel Test\\n\\n")
 cat("data:  resp by grp\\n")
 cat(sprintf("alternative hypothesis: relative effect P(X<Y)+.5*P(X=Y) is %s 0.5\\n",
@@ -889,10 +932,28 @@ cat(sprintf("Brunner-Munzel statistic = %.4f, df = %.3f, p-value = %.5g\\n", sta
 cat(sprintf("%.0f percent confidence interval: %.4f %.4f\\n", cilev*100, ci[1], ci[2]))
 cat(sprintf("sample estimate, P(X<Y)+.5*P(X=Y) = %.4f\\n", pst))
 cat(sprintf("\\nGroups: %s vs %s\\n", lv[1], lv[2]))
+if (sepr == 1)
+  cat("\\nNOTE: the standard error of the relative effect is zero. Either the two groups do\\n",
+      "      not overlap at all (every value in one group is above every value in the\\n",
+      "      other) or every value is tied. The test statistic, its df, the p-value and\\n",
+      "      the interval are undefined. Report the separation descriptively.\\n", sep = "")
 c(stat=stat, df=df, p=p, phat=pst, cil=ci[1], ciu=ci[2],
-  n1=nx, md1=median(x), n2=ny, md2=median(y))`,
+  n1=nx, md1=median(x), n2=ny, md2=median(y), sep=sepr)`,
     render(R, ctx){
       const [l1,l2]=ctx.levels.grp, grp=ctx.cols.grp, resp=ctx.cols.resp;
+      if(R.sep === 1){
+        const what = R.phat === 0.5 ? 'every value is tied' : `the two groups do not overlap at all: every ${resp} in ${R.phat > 0.5 ? l2 : l1} is above every ${resp} in ${R.phat > 0.5 ? l1 : l2}`;
+        const msg = `Relative effect p-hat = ${nz(R.phat)}. The Brunner-Munzel test and its confidence interval could not be computed because ${what}, so the standard error of the relative effect is zero. Report the separation descriptively. Mdn = median.`;
+        return buildAPA({
+          title:`Descriptive Statistics and Brunner-Munzel Test for ${resp} by ${grp}`,
+          headers:[{t:grp},{t:'n',it:true,num:true},{t:'Mdn',it:true,num:true}],
+          rows:[
+            [{t:l1},{t:R.n1,num:true},{t:f2(R.md1),num:true}],
+            [{t:l2},{t:R.n2,num:true},{t:f2(R.md2),num:true}]
+          ],
+          note:{ html:`<i>Note.</i> ${msg.replace('p-hat','<i>p&#770;</i>')}`, plain:`Note. ${msg}` }
+        });
+      }
       return buildAPA({
         title:`Descriptive Statistics and Brunner-Munzel Test for ${resp} by ${grp}`,
         headers:[{t:grp},{t:'n',it:true,num:true},{t:'Mdn',it:true,num:true}],
@@ -1221,15 +1282,25 @@ list(chi2 = unname(ct$statistic), df = unname(ct$parameter), p = ct$p.value,
       { key:'propstr', type:'text', label:'Expected proportions (optional) — comma-separated, in category order shown below; blank = equal', default:'' }
     ],
     levelsPreview: 'variable',
+    check: propsCheck,
     defaults: { variable:'Age', counts:'Count' },
     rProgram: `
 library(effectsize)
 v <- factor(variable)
 if (exists("counts")) { dd <- data.frame(v = v, w = as.numeric(counts)); tab <- xtabs(w ~ v, data = dd) } else { tab <- table(v) }
 k <- length(tab)
-ps <- suppressWarnings(as.numeric(trimws(strsplit(propstr, ",")[[1]])))
-ps <- ps[is.finite(ps)]
-if (length(ps) == k && all(ps > 0)) { p <- ps/sum(ps) } else { p <- rep(1/k, k) }
+# Blank box = equal proportions. Anything else must be one positive number per
+# category; the page checks this before running, and this stop() is the backstop,
+# so a typing mistake can never fall back to equal proportions unnoticed.
+raw <- trimws(strsplit(propstr, ",")[[1]]); raw <- raw[nzchar(raw)]
+if (length(raw) == 0) { p <- rep(1/k, k) } else {
+  ps <- suppressWarnings(as.numeric(raw))
+  if (length(ps) != k || any(!is.finite(ps)) || any(ps <= 0))
+    stop("The expected proportions do not match the categories: enter one positive number per category, separated by commas.")
+  if (abs(sum(ps) - 1) > 1e-9)
+    cat(sprintf("NOTE: the expected values entered sum to %s, not 1, so each was divided by %s.\\n\\n", format(sum(ps)), format(sum(ps))))
+  p <- ps/sum(ps)
+}
 ct <- chisq.test(tab, p = p)
 cw <- cohens_w(tab, p = p, ci = 2*conf - 1, alternative = "two.sided")
 # Standardized residuals (O - E) / sqrt(E(1 - p)) with a Bonferroni cutoff. m = number of distinct
@@ -1271,7 +1342,7 @@ list(chi2 = unname(ct$statistic), df = unname(ct$parameter), p = ct$p.value, N =
           html:`<i>Note.</i> \u03C7\u00B2(${R.df[0]}, <i>N</i> = ${R.N[0]}) = ${f2(R.chi2[0])}, <i>p</i> ${pFmt(R.p[0])}. Cohen's <i>w</i> = ${f2(R.w[0])}, ${ciPct}% CI [${f2(R.cil[0])}, ${f2(R.ciu[0])}].${warnH} Cutoff = &Phi;<sup>&minus;1</sup>(1 &minus; ${nz(env.siglev,2)} / (2<i>m</i>)) = ${f2(R.cut[0])}, <i>m</i> = ${R.m[0]}. Residuals with |<i>z</i>| greater than the cutoff flag the categories driving the departure from the expected proportions.`,
           plain:`Note. chi-square(${R.df[0]}, N = ${R.N[0]}) = ${f2(R.chi2[0])}, p ${pFmt(R.p[0])}. Cohen's w = ${f2(R.w[0])}, ${ciPct}% CI [${f2(R.cil[0])}, ${f2(R.ciu[0])}].${warnP} Cutoff = qnorm(1 - ${nz(env.siglev,2)} / (2m)) = ${f2(R.cut[0])}, m = ${R.m[0]}. Residuals with |z| greater than the cutoff flag the categories driving the departure from the expected proportions.`
         };
-        { const pn = ' Percentages in parentheses are the observed percentage of N (under Observed) and the expected percentage (under Expected).'; note.html += pn; note.plain += pn; }
+        { const pn = ' Percentages in parentheses are the observed percentage of N (under Observed) and the expected percentage (under Expected).' + propsNote(env.propstr, k); note.html += pn; note.plain += pn; }
         const out = buildAPA({ title:`Goodness-of-Fit Test for ${varName}`, headers, rows, note });
         document.getElementById('console').textContent = consoleText;
         setAPA(out.screenHtml);
@@ -1611,6 +1682,9 @@ cat(sprintf("Cohen's h = %.3f, %.0f%% CI [%.3f, %.3f]\\n", h, cilev*100, hlo, hu
 cat(sprintf("Risk ratio = %.3f, %.0f%% CI [%.3f, %.3f]\\n", RR, cilev*100, rrlo, rrup))
 cat(sprintf("Odds ratio = %.3f, %.0f%% CI [%.3f, %.3f]\\n", OR, cilev*100, orlo, orup))
 if (hacorr) cat("Note: a cell count was 0; Haldane-Anscombe +0.5 correction applied to RR and OR.\\n")
+if (!is.finite(ptst$p.value))
+  cat("NOTE: both groups have the same proportion, exactly 0 or exactly 1, so the pooled\\n",
+      "      standard error is zero and z and its p-value are undefined (shown as NA).\\n", sep = "")
 c(x1=x1,n1=n1,p1=p1, x2=x2,n2=n2,p2=p2, z=zstat, p=ptst$p.value,
   diff=diff, dlo=dlo, dup=dup, h=h, hlo=hlo, hup=hup,
   RR=RR, rrlo=rrlo, rrup=rrup, OR=OR, orlo=orlo, orup=orup, hac=as.numeric(hacorr))`,
@@ -1722,6 +1796,10 @@ for (i in 1:(k-1)) for (j in (i+1):k) {
 ph <- p.adjust(pr, method = padj_m)
 for (r in 1:m) cat(sprintf("  %s - %s: diff = %.4f, %s [%.4f, %.4f], z = %.3f, p(raw) = %.5g, %s = %.5g\\n",
   gi[r], gj[r], dv[r], ci_lab, lo[r], hi[r], zv[r], pr[r], p_lab, ph[r]))
+if (any(!is.finite(pr)))
+  cat("NOTE: for a pair whose two proportions are both exactly 0 or both exactly 1 the pooled\\n",
+      "      standard error is zero, so z and its p-value are undefined (NaN). The adjustment\\n",
+      "      is applied to the remaining comparisons.\\n", sep = "")
 # Omnibus: chi-square test of homogeneity across all k groups (same estimand as the contrasts)
 omtab <- rbind(success = xs, failure = ns - xs)
 omchi <- suppressWarnings(chisq.test(omtab, correct = FALSE))
@@ -1745,7 +1823,7 @@ list(lv = lv, xs = xs, ns = ns, ps = ps, k = k, m = m,
         const grp=cols.grp, outcome=cols.outcome, success=env.success, ci=pct(env.conf);
         const k=R.k[0], m=R.m[0], lv=R.lv;
         const MB = multBits(multOn(env), m, ci);
-        const pcell = p => p < .001 ? '< .001' : nz(p,3);
+        const pcell = pCell;
         // Precision from sqrt(p(1-p)/n): the group column from the smallest group SE,
         // the difference column from the smallest SE of a pairwise difference.
         const Dp = seDigits(lv.map((_,i)=>seProp(R.ps[i], R.ns[i])));
@@ -1916,7 +1994,7 @@ c(b0=co[1,1], b0se=co[1,2], b0t=co[1,3], b0p=co[1,4], b0l=ci[1,1], b0u=ci[1,2],
   ninf=ninf, nflip=nflip, cutd=cutD, maxd=max(cd), as.vector(t(mat)))`,
     render(R, ctx){
       const resp=ctx.cols.response, pred=ctx.cols.predictor, ci=pct(ctx.conf);
-      const pc = p => p < .001 ? '< .001' : nz(p,3);
+      const pc = pCell;
       // Coefficients sit on different scales, so precision is per row (from that
       // row's SE) rather than per column.
       const D0 = seDigits(R.b0se), D1 = seDigits(R.b1se);
@@ -2057,10 +2135,17 @@ if (exists("predictor2")) addp(predictor2, predictor2_name, predictor2_ty)
 if (exists("predictor3")) addp(predictor3, predictor3_name, predictor3_ty)
 if (exists("predictor4")) addp(predictor4, predictor4_name, predictor4_ty)
 fit <- lm(as.formula(fml), data = df)
-s <- summary(fit); co <- s$coefficients; ci <- confint(fit, level = conf)
+s <- summary(fit); co <- s$coefficients
+# summary() drops a term R could not estimate (an exact linear combination of other
+# terms), but confint() keeps it as a row of NA. Match the intervals to the rows of
+# the coefficient table by name so they can never slide onto the wrong term.
+ci <- confint(fit, level = conf)[rownames(co), , drop = FALSE]
+aliased <- names(coef(fit))[is.na(coef(fit))]
 fstat <- unname(s$fstatistic[1]); df1 <- unname(s$fstatistic[2]); df2 <- unname(s$fstatistic[3])
 print(s)
 cat(sprintf("\\nModel: %s\\n", fml))
+if (length(aliased))
+  cat(sprintf("\\nNOTE: not estimated because redundant with the other terms: %s\\n", paste(aliased, collapse = ", ")))
 cat(sprintf("\\n%.0f%% CI for coefficients:\\n", conf*100)); print(ci)
 ACC <- '#0f6b5c'; sig <- s$sigma
 PAL <- c('#0f6b5c','#c98a2b','#3f6d9e','#8a4f7d','#6b8f3a','#b0563a')
@@ -2106,7 +2191,8 @@ if (length(predcols)==2 && sum(types=="num")==1 && sum(types=="cat")==1) {
 list(term = rownames(co), est = co[,1], se = co[,2], tval = co[,3], pval = co[,4],
      lo = ci[,1], hi = ci[,2], f = fstat, df1 = df1, df2 = df2,
      fp = pf(fstat, df1, df2, lower.tail = FALSE),
-     r2 = s$r.squared, adjr2 = s$adj.r.squared, n = nrow(df), scat = scat)`,
+     r2 = s$r.squared, adjr2 = s$adj.r.squared, n = nrow(df), scat = scat,
+     nalias = length(aliased), aliased = paste(aliased, collapse = ", "))`,
     async run({env, cols, active, used, dropped}){
       document.getElementById('edaOut').classList.add('hidden');
       const predKeys = ['predictor1','predictor2','predictor3','predictor4'].filter(k=>cols[k]);
@@ -2132,8 +2218,10 @@ list(term = rownames(co), est = co[,1], se = co[,2], tval = co[,3], pval = co[,4
         const cap = await shelter.captureR(this.rProgram, { env, captureGraphics:{ width:820, height:460 } });
         const consoleText = cap.output.filter(o=>o.type==='stdout'||o.type==='stderr').map(o=>o.data).join('\n');
         const R = rlistToObj(await cap.result.toJs());
-        const ci = pct(env.conf), pc = p => p < .001 ? '< .001' : nz(p,3);
+        const ci = pct(env.conf), pc = pCell;
         const term=R.term, est=R.est, se=R.se, tv=R.tval, pv=R.pval, lo=R.lo, hi=R.hi;
+        const aliasTxt = (R.nalias && R.nalias[0] > 0)
+          ? ` Not estimated and left out of the table because redundant with the other terms (an exact linear combination of them): ${R.aliased[0]}.` : '';
         // Precision is per row, from that row's SE: the terms are on different scales.
         const rows = term.map((tm,i)=>{ const Di = seDigits(se[i]); return [
           {t:String(tm)},{t:f2(est[i],Di),num:true},{t:f2(se[i],Di),num:true},
@@ -2144,8 +2232,8 @@ list(term = rownames(co), est = co[,1], se = co[,2], tval = co[,3], pval = co[,4
           headers:[{t:'Term'},{t:'B',it:true,num:true},{t:'SE',it:true,num:true},{t:'t',it:true,num:true},{t:'p',it:true,num:true},{t:`${ci} CI`,num:true}],
           rows,
           note:{
-            html:`<i>Note.</i> Overall model: <i>F</i>(${R.df1[0]}, ${R.df2[0]}) = ${f2(R.f[0])}, <i>p</i> ${pFmt(R.fp[0])}. <i>R</i><sup>2</sup> = ${nz(R.r2[0])}, adjusted <i>R</i><sup>2</sup> = ${nz(R.adjr2[0])}. <i>n</i> = ${R.n[0]}.`,
-            plain:`Note. Overall model: F(${R.df1[0]}, ${R.df2[0]}) = ${f2(R.f[0])}, p ${pFmt(R.fp[0])}. R^2 = ${nz(R.r2[0])}, adjusted R^2 = ${nz(R.adjr2[0])}. n = ${R.n[0]}.`
+            html:`<i>Note.</i> Overall model: <i>F</i>(${R.df1[0]}, ${R.df2[0]}) = ${f2(R.f[0])}, <i>p</i> ${pFmt(R.fp[0])}. <i>R</i><sup>2</sup> = ${nz(R.r2[0])}, adjusted <i>R</i><sup>2</sup> = ${nz(R.adjr2[0])}. <i>n</i> = ${R.n[0]}.${aliasTxt}`,
+            plain:`Note. Overall model: F(${R.df1[0]}, ${R.df2[0]}) = ${f2(R.f[0])}, p ${pFmt(R.fp[0])}. R^2 = ${nz(R.r2[0])}, adjusted R^2 = ${nz(R.adjr2[0])}. n = ${R.n[0]}.${aliasTxt}`
           }
         });
         document.getElementById('console').textContent = consoleText;
@@ -2268,7 +2356,7 @@ list(lv = lv, ns = ns, ms = ms, ss = ss, k = k, qq = qq_drawn,
         const grp=cols.grp, resp=cols.resp, ci=pct(env.conf);
         const ciPct = Math.round((2*env.conf - 1)*100), aTxt = nz(env.siglev, 2);
         const k=R.k[0], lv=R.lv;
-        const pcell = p => p < .001 ? '< .001' : nz(p,3);
+        const pcell = pCell;
         // Descriptives take their precision from the smallest SE of a group mean;
         // the Games-Howell column from the smallest SE of a pairwise difference.
         const Dg = seDigits(lv.map((_,i)=>R.ss[i]/Math.sqrt(R.ns[i])));
@@ -2485,7 +2573,7 @@ list(lv = lv, ns = ns, mds = mds, k = k, m = m, se = se,
         const grp=cols.grp, resp=cols.resp, ci=pct(env.conf);
         const k=R.k[0], m=R.m[0], lv=R.lv;
         const MB = multBits(multOn(env), m, ci);
-        const pcell = p => p < .001 ? '< .001' : nz(p,3);
+        const pcell = pCell;
         // Bootstrap SEs of the pairwise differences; the medians are in the same units.
         const D = seDigits(Array.from(R.se));
         const rows = lv.map((g,i)=>[
@@ -2506,7 +2594,7 @@ list(lv = lv, ns = ns, mds = mds, k = k, m = m, se = se,
             {t:`${String(R.gi[r])} \u2212 ${String(R.gj[r])}`},
             {t:f2(R.est[r],D),num:true},
             {t:`[${f2(R.lo[r],D)}, ${f2(R.hi[r],D)}]`,num:true},
-            {t:Number.isFinite(Number(R.zv[r]))?f2(R.zv[r]):'\u2014',num:true},
+            {t:isNum(R.zv[r])?f2(R.zv[r]):'\u2014',num:true},
             {t:pcell(R.ph[r]),num:true}
           ]);
         }
@@ -2519,7 +2607,7 @@ list(lv = lv, ns = ns, mds = mds, k = k, m = m, se = se,
           note:{html:m>1?MB.footHtml:'<i>Note.</i> With a single comparison there is no multiplicity to adjust for, so the interval and the <i>p</i>-value describe the same difference at the same level and cannot disagree.',
                 plain:m>1?MB.footPlain:'Note. With a single comparison there is no multiplicity to adjust for, so the interval and the p-value describe the same difference at the same level and cannot disagree.'}
         });
-        const omAvail = R.omp && Number.isFinite(Number(R.omp[0]));
+        const omAvail = R.omp && isNum(R.omp[0]);
         const omHtml = omAvail
           ? `<b>Omnibus (subordinate, non-gating):</b> bootstrap median-equality test, <i>Q</i> = ${f2(R.omQ[0])}, <i>df</i> = ${R.omdf1[0]}, <i>p</i> ${pFmt(R.omp[0])}.`
           : `<b>Omnibus (subordinate, non-gating):</b> not computed \u2014 at least one group has a degenerate resampling distribution (see console).`;
@@ -2565,7 +2653,7 @@ lv <- levels(d$g); k <- length(lv)
 ns <- as.numeric(tapply(d$y, d$g, length))
 cl <- (2*conf - 1)  # mctp 'conf.level' is the simultaneous coverage; pass user level directly below
 res <- tryCatch(
-  mctp(y ~ g, data = d, type = "Tukey", conf.level = conf, info = FALSE, asy.method = "mult.t"),
+  mctp(y ~ g, data = d, type = "Tukey", conf.level = conf, info = FALSE, asy.method = "mult.t", rounds = 10),
   error = function(e) e)
 if (inherits(res, "error")) {
   sep <- grepl("chkcorr|correlation matrix|missing value", conditionMessage(res))
@@ -2628,12 +2716,12 @@ if (inherits(res, "error")) {
         }
         const grp=cols.grp, resp=cols.resp, ci=pct(env.conf);
         const k=R.k[0], lv=R.lv, m=R.est.length;
-        const pcell = p => p < .001 ? '< .001' : nz(p,3);
+        const pcell = pCell;
         // relative effects vs the unweighted average of the group distributions (with per-group simultaneous CIs)
         const rows = lv.map((g,i)=>[
           {t:String(g)}, {t:R.ns[i],num:true},
-          {t: (R.pe && Number.isFinite(Number(R.pe[i]))) ? nz(R.pe[i]) : '\u2014', num:true},
-          {t: (R.peL && Number.isFinite(Number(R.peL[i]))) ? `[${nz(R.peL[i])}, ${nz(R.peU[i])}]` : '\u2014'}
+          {t: (R.pe && isNum(R.pe[i])) ? nz(R.pe[i]) : '\u2014', num:true},
+          {t: (R.peL && isNum(R.peL[i])) ? `[${nz(R.peL[i])}, ${nz(R.peU[i])}]` : '\u2014'}
         ]);
         const note = {
           html:`<i>Note.</i> Each <i>p\u0302</i> is a relative effect: the probability that a randomly chosen value from the average of the ${k} group distributions (each group weighted equally, regardless of <i>n</i>) is lower than a randomly chosen value from that group, plus half the probability of a tie. Values above .50 mean the group tends to rank above the average. Pairwise contrasts are differences in these relative effects (Tukey-type, all pairs). BDM-type omnibus (MCTP): <i>p</i> ${pFmt(R.om[0])}. ${ci} simultaneous CIs and adjusted <i>p</i>-values via the multivariate-<i>t</i> (Konietschke et&nbsp;al., 2012).`,
@@ -2715,9 +2803,11 @@ if (bonf_on) {
 gi <- c(); gj <- c(); est <- c(); lo <- c(); hi <- c(); tv <- c(); pr <- c(); failpair <- c()
 for (i in 1:(k-1)) for (j in (i+1):k) {
   sub <- droplevels(d[d$g %in% c(lv[i], lv[j]), ])
-  # the p-value does not depend on conf.level; only the interval width does
+  # the p-value does not depend on conf.level; only the interval width does.
+  # rounds = 10: nparcomp rounds its output to 3 decimals by default, and a p-value
+  # rounded before the Holm or Bonferroni adjustment gives a wrong adjusted p-value.
   r1 <- tryCatch(npar.t.test(y ~ g, data = sub, method = "t.app", info = FALSE,
-                  alternative = "two.sided", conf.level = conf_ci), error = function(e) e)
+                  alternative = "two.sided", conf.level = conf_ci, rounds = 10), error = function(e) e)
   if (inherits(r1, "error")) {
     gi <- c(gi, lv[i]); gj <- c(gj, lv[j]); est <- c(est, NA); lo <- c(lo, NA); hi <- c(hi, NA)
     tv <- c(tv, NA); pr <- c(pr, NA); failpair <- c(failpair, paste(lv[i], lv[j], sep="-"))
@@ -2896,14 +2986,24 @@ list(p = ft$p.value, or = orv, orl = orl, oru = oru, is22 = is22, mc = 1 - exact
       { key:'propstr', type:'text', label:'Expected proportions (optional) — comma-separated, in category order shown below; blank = equal', default:'' }
     ],
     levelsPreview: 'variable',
+    check: propsCheck,
     defaults: { variable:'Age', counts:'Count' },
     rProgram: `
 v <- factor(variable)
 if (exists("counts")) { dd <- data.frame(v = v, w = as.numeric(counts)); tab <- xtabs(w ~ v, data = dd) } else { tab <- table(v) }
 k <- length(tab); N <- sum(tab)
-ps <- suppressWarnings(as.numeric(trimws(strsplit(propstr, ",")[[1]])))
-ps <- ps[is.finite(ps)]
-if (length(ps) == k && all(ps > 0)) { p <- ps/sum(ps) } else { p <- rep(1/k, k) }
+# Blank box = equal proportions. Anything else must be one positive number per
+# category; the page checks this before running, and this stop() is the backstop,
+# so a typing mistake can never fall back to equal proportions unnoticed.
+raw <- trimws(strsplit(propstr, ",")[[1]]); raw <- raw[nzchar(raw)]
+if (length(raw) == 0) { p <- rep(1/k, k) } else {
+  ps <- suppressWarnings(as.numeric(raw))
+  if (length(ps) != k || any(!is.finite(ps)) || any(ps <= 0))
+    stop("The expected proportions do not match the categories: enter one positive number per category, separated by commas.")
+  if (abs(sum(ps) - 1) > 1e-9)
+    cat(sprintf("NOTE: the expected values entered sum to %s, not 1, so each was divided by %s.\\n\\n", format(sum(ps)), format(sum(ps))))
+  p <- ps/sum(ps)
+}
 suppressMessages(library(EMT))
 ncomp <- choose(N + k - 1, k - 1)
 if (is.finite(ncomp) && ncomp <= 2e6) {
@@ -2943,7 +3043,7 @@ list(p = res$p.value, mc = mc, k = k, N = N, w = w,
           html:`<i>Note.</i> Exact multinomial test, <i>N</i> = ${R.N[0]}, <i>p</i> ${pFmt(R.p[0])}. Cohen's <i>w</i> = ${f2(R.w[0])} (descriptive).${mcTxt}`,
           plain:`Note. Exact multinomial test, N = ${R.N[0]}, p ${pFmt(R.p[0])}. Cohen's w = ${f2(R.w[0])} (descriptive).${mcTxt}`
         };
-        { const pn = ' Percentages in parentheses are the observed percentage of N (under Observed) and the expected percentage (under Expected).'; note.html += pn; note.plain += pn; }
+        { const pn = ' Percentages in parentheses are the observed percentage of N (under Observed) and the expected percentage (under Expected).' + propsNote(env.propstr, k); note.html += pn; note.plain += pn; }
         const out = buildAPA({ title:`Exact Multinomial Goodness-of-Fit Test for ${varName}`, headers, rows, note });
         document.getElementById('console').textContent = consoleText;
         setAPA(out.screenHtml);
@@ -2970,23 +3070,37 @@ list(p = res$p.value, mc = mc, k = k, N = N, w = w,
         label:'Success category: the level counted as a success in both columns' }
     ],
     defaults: {},
+    check(cols){
+      const a = cols.pre, b = cols.post;
+      if(!a || !b || a === b || !columns[a] || !columns[b]) return '';
+      const la = levelsOf(columns[a]).sort(), lb = levelsOf(columns[b]).sort();
+      if(la.length === 2 && lb.length === 2 && (la[0] !== lb[0] || la[1] !== lb[1]))
+        return `The two columns must use the same two labels (labels are case-sensitive). ${a} has "${la[0]}" and "${la[1]}"; ${b} has "${lb[0]}" and "${lb[1]}". Fix the labels in the file and upload it again.`;
+      return '';
+    },
     rProgram: `
 su <- success
 pr <- as.character(pre); po <- as.character(post)
+lvall <- union(pr, po)
+if (length(lvall) > 2 || !(su %in% lvall))
+  stop("The two columns must use the same two labels (labels are case-sensitive).")
+ot <- setdiff(lvall, su); if (!length(ot)) ot <- paste0("not ", su)
 w <- if (exists("counts")) as.numeric(counts) else rep(1, length(pr))
 a  <- sum(w[pr == su & po == su]); b <- sum(w[pr == su & po != su])
 cc <- sum(w[pr != su & po == su]); d <- sum(w[pr != su & po != su])
 n <- a + b + cc + d
 pt <- (a + b)/n; ps <- (a + cc)/n; D <- pt - ps
 nd <- b + cc
-tab <- matrix(c(a, b, cc, d), 2, 2, byrow = TRUE,
-  dimnames = list(pre = c(su, paste0("not ", su)), post = c(su, paste0("not ", su))))
+dn <- list(c(su, ot), c(su, ot)); names(dn) <- c(pre_name, post_name)
+tab <- matrix(c(a, b, cc, d), 2, 2, byrow = TRUE, dimnames = dn)
 cat("Paired 2x2 table (rows = first measure, columns = second measure):\\n"); print(tab)
 if (nd > 0) {
   z <- (b - cc)/sqrt(nd)
   chi2 <- z^2
   pchi <- switch(alt, less = pnorm(z), greater = pnorm(z, lower.tail = FALSE), 2*pnorm(-abs(z)))
   print(mcnemar.test(tab, correct = FALSE))
+  if (alt != "two.sided")
+    cat(sprintf("R's McNemar test above is two-sided. One-sided (%s) version used in the table:\\n  z = %.4f, p-value = %.4g\\n\\n", alt, z, pchi))
   bt <- binom.test(b, nd, 0.5, alternative = alt)
   cat("Exact binomial test on the discordant pairs:\\n"); print(bt)
   pex <- bt$p.value
@@ -3012,7 +3126,7 @@ cat(sprintf("\\nDifference in proportions (first - second) = %.4f, %.0f%% Newcom
 cat(sprintf("Paired (conditional) odds ratio b/c = %s, %.0f%% exact CI [%s, %s]\\n",
     format(orv, digits=4), cilev*100, format(orl, digits=4), format(oru, digits=4)))
 list(a=a, b=b, cc=cc, d=d, n=n, nd=nd, pt=pt, ps=ps, D=D, DL=DL, DU=DU,
-     chi2=chi2, z=z, pchi=pchi, pex=pex, useex=useex, orv=orv, orl=orl, oru=oru)`,
+     chi2=chi2, z=z, pchi=pchi, pex=pex, useex=useex, orv=orv, orl=orl, oru=oru, ot=ot)`,
     async run({env, cols, active, used, dropped}){
       document.getElementById('edaOut').classList.add('hidden');
       setStatus('Running in R…',{busy:true});
@@ -3029,10 +3143,11 @@ list(a=a, b=b, cc=cc, d=d, n=n, nd=nd, pt=pt, ps=ps, D=D, DL=DL, DU=DU,
         const nPairs = R.n[0], bD = R.b[0], cD = R.cc[0];
         const Dd = seDigits(nPairs > 0
           ? Math.sqrt(Math.max(0, bD + cD - Math.pow(bD - cD, 2)/nPairs))/nPairs : NaN);
-        const headers=[{t:`${preName} \\ ${postName}`},{t:String(su),num:true},{t:`not ${su}`,num:true}];
+        const other = String(R.ot[0]);
+        const headers=[{t:`${preName} \\ ${postName}`},{t:String(su),num:true},{t:other,num:true}];
         const rows=[
           [{t:String(su)},{t:R.a[0],num:true},{t:R.b[0],num:true}],
-          [{t:`not ${su}`},{t:R.cc[0],num:true},{t:R.d[0],num:true}]
+          [{t:other},{t:R.cc[0],num:true},{t:R.d[0],num:true}]
         ];
         const testTxt = useex
           ? `Exact binomial test on the ${R.nd[0]} discordant pairs, <i>p</i> ${pFmt(R.pex[0])}`
@@ -3444,7 +3559,17 @@ function updateLevelHint(){
   const colName = sel ? sel.value : '';
   if(colName && columns[colName]){
     const lv = levelsOf(columns[colName]).slice().sort();
-    el.innerHTML = `Categories in order: ${lv.map(x=>`<b>${x}</b>`).join(', ')}.<br>This order is alphabetical, which matches R for ordinary text or number-coded labels. If labels ever have unusual capitalization or leading symbols, R's ordering (shown in the output table) is the authoritative one.`;
+    // Say exactly which expected proportion each category will get, before Run is pressed.
+    const pEl = rolesContainer.querySelector('[data-param="propstr"]');
+    let use = '';
+    if(pEl){
+      const r = parseProps(pEl.value, lv.length);
+      const f = x => String(+x.toFixed(4));
+      if(r.blank) use = `<br>Expected proportions that will be used: equal, ${f(1/lv.length)} for each category.`;
+      else if(r.nums) use = `<br>Expected proportions that will be used: ${lv.map((x,i)=>`${x} = ${f(r.props[i])}`).join(', ')}.`
+        + (r.rescaled ? ` Your values sum to ${sumTxt(r.sum)}, not 1, so each was divided by ${sumTxt(r.sum)}.` : '');
+    }
+    el.innerHTML = `Categories in order: ${lv.map(x=>`<b>${x}</b>`).join(', ')}.<br>This order is alphabetical, which matches R for ordinary text or number-coded labels. If labels ever have unusual capitalization or leading symbols, R's ordering (shown in the output table) is the authoritative one.${use}`;
   } else { el.textContent=''; }
 }
 
@@ -3476,6 +3601,14 @@ function validate(){
   }
   for(const role of t.roles){
     if(role.kind==='group2' && cols[role.key] && levelsOf(columns[cols[role.key]]).length!==2){ ok=false; msg='The group column must have exactly 2 levels.'; }
+  }
+  // Module-specific input checks (labels that must match, expected proportions, and so
+  // on). A module's check(cols, pv) returns a message, or '' when the inputs are usable.
+  if(t.check){
+    const pv0 = {};
+    rolesContainer.querySelectorAll('[data-param]').forEach(e=>pv0[e.dataset.param]=e.value);
+    const m = t.check(cols, pv0);
+    if(m){ ok=false; if(!msg) msg = m; }
   }
   // Required level parameters (e.g. the success category) have no default: Run stays
   // disabled until each one is chosen.
@@ -3512,6 +3645,7 @@ function validate(){
   }
   roleWarn.textContent = msg;
   runBtn.disabled = !ok;
+  updateLevelHint();
 }
 
 /* ============================ run ============================ */
